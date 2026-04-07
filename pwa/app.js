@@ -1,7 +1,9 @@
 const API_BASE = '/api';
 let autoRefreshInterval = null;
-const REFRESH_INTERVAL = 1500; // 1.5 seconds for real-time feel
+const REFRESH_INTERVAL = 800; // faster sync so deletes disappear quickly
 let lastMessages = []; // Track previous messages for diffing
+let shouldStickOnNextRender = true;
+let hasAnchoredInitialView = false;
 
 // DOM Elements
 const messagesContainer = document.getElementById('messagesContainer');
@@ -90,27 +92,28 @@ function showToast(message, type = 'success') {
     }, 3000);
 }
 
+function isFeedNearBottom(threshold = 120) {
+    if (!messagesContainer) return true;
+    const remaining = messagesContainer.scrollHeight - (messagesContainer.scrollTop + messagesContainer.clientHeight);
+    return remaining <= threshold;
+}
+
 function stickFeedToBottom() {
     if (!messagesContainer) return;
+
     const pin = () => {
-        messagesContainer.scrollTop = messagesContainer.scrollHeight;
-        const lastCard = messagesContainer.querySelector('.message-card:last-of-type');
-        if (lastCard) {
-            lastCard.scrollIntoView({ block: 'end' });
-        }
+        const maxScrollTop = Math.max(0, messagesContainer.scrollHeight - messagesContainer.clientHeight);
+        messagesContainer.scrollTop = maxScrollTop;
     };
 
-    // Multi-pass to handle async layout shifts (images/fonts) after render.
     requestAnimationFrame(pin);
     setTimeout(pin, 60);
     setTimeout(pin, 180);
 }
 
-window.addEventListener('load', stickFeedToBottom);
-window.addEventListener('pageshow', stickFeedToBottom);
-
 async function loadMessages() {
     try {
+        const wasNearBottom = isFeedNearBottom();
         console.log('📡 Fetching messages...');
         const res = await fetch(`${API_BASE}/messages`);
         const data = await res.json();
@@ -119,12 +122,11 @@ async function loadMessages() {
             let messages = data.messages || [];
             // apply form filter
             messages = applyFormFilter(messages);
-            // chat-style flow: old requests at top, newest at bottom
+            // Chat flow: old requests at top, newest at bottom.
             messages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
             if (messages.length > 0) {
                 console.log(`✅ Loaded ${messages.length} messages`);
-                renderMessagesWithDiff(messages);
-                stickFeedToBottom();
+                renderMessagesWithDiff(messages, { wasNearBottom });
             } else {
                 messagesContainer.innerHTML = `
                     <div class="loading-state">
@@ -177,16 +179,23 @@ function applyFormFilter(messages) {
     });
 }
 
-function renderMessagesWithDiff(newMessages) {
+function renderMessagesWithDiff(newMessages, options = {}) {
     // Check if messages have changed (including content changes)
     const hasChanges = checkForChanges(lastMessages, newMessages);
+    const wasNearBottom = options.wasNearBottom ?? isFeedNearBottom();
+    const hadNoPreviousMessages = lastMessages.length === 0;
+    const previousTailId = lastMessages[lastMessages.length - 1]?.tg_message_id;
+    const nextTailId = newMessages[newMessages.length - 1]?.tg_message_id;
+    const hasNewTailMessage = !hadNoPreviousMessages && nextTailId && previousTailId !== nextTailId;
     
     if (!hasChanges && lastMessages.length > 0) {
         // No changes, skip rendering
         console.log('📌 Messages unchanged');
-        stickFeedToBottom();
         return;
     }
+
+    // Stick only when opening first time or when user was already near bottom and new tail message arrived.
+    shouldStickOnNextRender = hadNoPreviousMessages || (wasNearBottom && hasNewTailMessage);
     
     // Changes detected, re-render
     console.log('🔄 Re-rendering messages (changes detected)');
@@ -356,11 +365,13 @@ function renderMessages(messages) {
                         <div class="sender-meta">${escapeHtml(msg.group_name)}</div>
                     </div>
                 </div>
-                <div class="card-time">${timeStr}</div>
             </div>
             <div class="card-body">
                 ${replyPlaceholder}
                 <div class="message-text">${escapeHtml(msg.message_text || '').replace(/\n/g, '<br>')}</div>
+            </div>
+            <div class="card-meta-row">
+                <div class="card-time">${timeStr}</div>
             </div>
             <div class="card-footer">
                 ${buttonHTML}
@@ -403,11 +414,13 @@ function renderMessages(messages) {
         console.warn('ClipboardJS not loaded');
     }
 
-    // Keep the latest request visible at the bottom, like a chat timeline.
-    stickFeedToBottom();
-
     // update requests counter after DOM is rendered
     updateRequestsBadge();
+
+    if (shouldStickOnNextRender) {
+        stickFeedToBottom();
+    }
+    shouldStickOnNextRender = false;
 }
 
 // New helper: fetch original message and render a small clickable preview
@@ -649,6 +662,16 @@ window.clearPwaCache = clearPwaCache;
 
 // Cleanup
 window.addEventListener('beforeunload', stopAutoRefresh);
+
+// Disable browser scroll restore so we control first paint position.
+if ('scrollRestoration' in history) {
+    history.scrollRestoration = 'manual';
+}
+window.addEventListener('load', () => {
+    if (hasAnchoredInitialView) return;
+    hasAnchoredInitialView = true;
+    stickFeedToBottom();
+});
 
 // -- add profile modal handlers --
 const profileModal = document.getElementById('profileModal');

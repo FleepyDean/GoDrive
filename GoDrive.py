@@ -228,7 +228,8 @@ async def gather_message_data(event) -> dict:
         "message_id": event.message.id,
         "message_text": event.message.text,
         "reply_to_msg_id": event.message.reply_to_msg_id,
-        "message_date": event.message.date.strftime("%Y-%m-%d %H:%M:%S"),
+        "message_date": event.message.date.isoformat(),
+        "edit_date": event.message.edit_date.isoformat() if getattr(event.message, 'edit_date', None) else None,
 
         # Chat Info
         "chat_id": raw_chat_id,
@@ -359,7 +360,7 @@ def save_message_to_db(data: dict):
             data.get("dropoff"),
             contact_url,
             avatar_url,
-            datetime.now().isoformat()
+            data.get("message_date") or datetime.now().isoformat()
         ))
         conn.commit()
         conn.close()
@@ -447,10 +448,8 @@ async def process_new_message(event):
 # Optimize edit handler for instant response
 @client.on(events.MessageEdited(chats=list(GROUP_ID.keys())))
 async def handle_edit(event):
-    # Trigger edit processing if we have a composite mapping for this chat+msg id
-    key = f"{event.chat_id}:{event.message.id}"
-    if key in message_map or event.message.id in message_map:
-        asyncio.create_task(process_edit_message(event))
+    # Always reconcile the source DB on edit; bot message updates are optional.
+    asyncio.create_task(process_edit_message(event))
 
 async def process_edit_message(event):
     try:
@@ -465,7 +464,7 @@ async def process_edit_message(event):
                 UPDATE messages 
                 SET message_text = ?, pickup = ?, dropoff = ?, edited_at = ? 
                 WHERE tg_message_id = ? OR tg_message_id LIKE ?
-            ''', (data["message_text"], data["pickup"], data["dropoff"], datetime.now().isoformat(), key, f'%:{data["message_id"]}'))
+            ''', (data["message_text"], data["pickup"], data["dropoff"], data.get("edit_date") or datetime.now().isoformat(), key, f'%:{data["message_id"]}'))
             conn.commit()
             conn.close()
             print(f"✅ Message {key} updated in database")
@@ -506,43 +505,160 @@ async def process_edit_message(event):
     except Exception as e:
         print(f"❌ Error editing message: {str(e)}")
 
-@client.on(events.Raw)
+def _mark_deleted_in_db(chat_id, msg_id):
+    try:
+        conn = get_db_conn()
+        c = conn.cursor()
+        if chat_id is not None:
+            exact_key = f"{chat_id}:{msg_id}"
+            c.execute('UPDATE messages SET is_deleted = 1 WHERE tg_message_id = ?', (exact_key,))
+            if c.rowcount == 0:
+                c.execute('UPDATE messages SET is_deleted = 1 WHERE chat_id = ? AND tg_message_id LIKE ?', (chat_id, f'%:{msg_id}'))
+        else:
+            c.execute('UPDATE messages SET is_deleted = 1 WHERE tg_message_id LIKE ?', (f'%:{msg_id}',))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Error marking message as deleted: {e}")
+        return False
+
+def _delete_bot_message(msg_id, chat_id=None):
+    bot_msg_id = None
+    try:
+        if chat_id is not None:
+            bot_msg_id = message_map.get(f"{chat_id}:{msg_id}")
+        if not bot_msg_id:
+            for k, v in message_map.items():
+                if k == str(msg_id) or k.endswith(f":{msg_id}"):
+                    bot_msg_id = v
+                    break
+    except Exception as e:
+        print(f"⚠️ Error searching message_map for deleted msg {msg_id}: {e}")
+
+    if bot_msg_id:
+        try:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage"
+            payload = {"chat_id": BOT_CHAT_ID, "message_id": bot_msg_id}
+            asyncio.create_task(safe_http_request("post", url, json=payload))
+            print(f"🗑️ Requested bot to delete message id {bot_msg_id}")
+        except Exception as e:
+            print(f"❌ Failed to request bot delete for message {bot_msg_id}: {e}")
+
+@client.on(events.MessageDeleted(chats=list(GROUP_ID.keys())))
 async def handle_deleted_messages(event):
-    if isinstance(event, UpdateDeleteMessages):
-        for msg_id in event.messages:
-            try:
-                conn = get_db_conn()
-                c = conn.cursor()
-                # Mark as deleted: match exact composite or legacy numeric suffix
-                c.execute('UPDATE messages SET is_deleted = 1 WHERE tg_message_id = ? OR tg_message_id LIKE ?', (str(msg_id), f'%:{msg_id}'))
-                conn.commit()
-                conn.close()
-                print(f"🗑️ Message {msg_id} marked as deleted in DB")
-            except Exception as e:
-                print(f"❌ Error marking message as deleted: {e}")
+    deleted_ids = getattr(event, 'deleted_ids', None) or getattr(event, 'messages', None) or []
+    chat_id = getattr(event, 'chat_id', None)
 
-            # Find bot message id by numeric key or any composite key that ends with :<msg_id>
-            bot_msg_id = None
-            try:
-                for k, v in message_map.items():
-                    if k == str(msg_id) or k.endswith(f":{msg_id}"):
-                        bot_msg_id = v
-                        break
-            except Exception as e:
-                print(f"⚠️ Error searching message_map for deleted msg {msg_id}: {e}")
+    for msg_id in deleted_ids:
+        if _mark_deleted_in_db(chat_id, msg_id):
+            print(f"🗑️ Message {msg_id} marked as deleted in DB")
+        _delete_bot_message(msg_id, chat_id)
 
-            if bot_msg_id:
+    # Re-check the affected chats immediately in case Telegram delivered a partial delete event.
+    asyncio.create_task(reconcile_recent_messages(limit_per_chat=150))
+
+async def reconcile_recent_messages(limit_per_chat=250):
+    """Repair missed edits/deletes by comparing recent DB rows to live Telegram history."""
+    conn = None
+    try:
+        conn = get_db_conn()
+        c = conn.cursor()
+
+        for chat_id in GROUP_ID.keys():
+            c.execute(
+                '''
+                SELECT tg_message_id, message_text, reply_to_msg_id, edited_at
+                FROM messages
+                WHERE chat_id = ? AND is_deleted = 0
+                ORDER BY created_at DESC
+                LIMIT ?
+                ''',
+                (chat_id, limit_per_chat)
+            )
+            rows = c.fetchall()
+            if not rows:
+                continue
+
+            row_by_id = {}
+            ids = []
+            for row in rows:
+                tg_id = str(row[0])
+                msg_suffix = tg_id.split(':')[-1]
                 try:
-                    url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage"
-                    payload = {
-                        "chat_id": BOT_CHAT_ID,
-                        "message_id": bot_msg_id
-                    }
-                    # fire-and-forget deletion via safe_http_request
-                    asyncio.create_task(safe_http_request("post", url, json=payload))
-                    print(f"🗑️ Requested bot to delete message id {bot_msg_id}")
-                except Exception as e:
-                    print(f"❌ Failed to request bot delete for message {bot_msg_id}: {e}")
+                    msg_id = int(msg_suffix)
+                except Exception:
+                    continue
+                row_by_id[msg_id] = row
+                ids.append(msg_id)
+
+            if not ids:
+                continue
+
+            try:
+                live_messages = await client.get_messages(chat_id, ids=ids)
+            except Exception as e:
+                print(f"⚠️ Reconciliation fetch failed for {chat_id}: {e}")
+                continue
+
+            if not isinstance(live_messages, list):
+                live_messages = [live_messages]
+
+            live_by_id = {}
+            for live in live_messages:
+                if live and getattr(live, 'id', None):
+                    live_by_id[live.id] = live
+
+            for msg_id, row in row_by_id.items():
+                live = live_by_id.get(msg_id)
+                if not live:
+                    _mark_deleted_in_db(chat_id, msg_id)
+                    continue
+
+                live_text = getattr(live, 'raw_text', None) or getattr(live, 'message', None) or ''
+                live_reply = getattr(live, 'reply_to_msg_id', None)
+                live_edit = getattr(live, 'edit_date', None)
+                live_edit_str = live_edit.isoformat() if live_edit else None
+
+                row_text = row[1] or ''
+                row_reply = row[2]
+                row_edit = row[3]
+
+                if live_text != row_text or live_reply != row_reply or (live_edit_str and live_edit_str != row_edit):
+                    pickup, dropoff = extract_locations(live_text)
+                    c.execute(
+                        '''
+                        UPDATE messages
+                        SET message_text = ?, reply_to_msg_id = ?, pickup = ?, dropoff = ?, edited_at = ?
+                        WHERE tg_message_id = ?
+                        ''',
+                        (
+                            live_text,
+                            live_reply,
+                            pickup,
+                            dropoff,
+                            live_edit_str or row_edit or datetime.now().isoformat(),
+                            f"{chat_id}:{msg_id}"
+                        )
+                    )
+
+        conn.commit()
+    except Exception as e:
+        print(f"⚠️ Reconciliation error: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+async def reconciliation_loop():
+    while True:
+        try:
+            await reconcile_recent_messages()
+        except Exception as e:
+            print(f"⚠️ Reconciliation loop error: {e}")
+        await asyncio.sleep(10)
 
 # ========== Bootstrap ==========
 
@@ -579,6 +695,7 @@ async def run():
             await asyncio.sleep(30)
 
     asyncio.create_task(persist_caches_periodically())
+    asyncio.create_task(reconciliation_loop())
 
     while True:
         try:

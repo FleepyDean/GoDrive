@@ -325,7 +325,6 @@
               <div class="sender-name">Session ${formatDateTime(s.startedAt)}</div>
               <div class="sender-meta">Duration: ${formatDuration(s.durationMs)}</div>
             </div>
-            <div class="card-time">RM ${Number(s.fuelCost).toFixed(2)}</div>
           </div>
           <div class="card-body">
             ${(() => {
@@ -336,6 +335,9 @@
             Start Mileage: ${Number(s.startMileage).toFixed(1)} km<br>
             End Mileage: ${Number(s.endMileage).toFixed(1)} km</div>`;
             })()}
+          </div>
+          <div class="card-meta-row">
+            <div class="card-time">RM ${Number(s.fuelCost).toFixed(2)}</div>
           </div>
           <div class="card-footer">
             <button class="action-btn btn-secondary record-edit-btn" type="button" data-id="${s.id}" style="flex: 1;">✏️ Edit</button>

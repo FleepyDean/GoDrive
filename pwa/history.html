@@ -240,10 +240,12 @@
                     <div class="sender-meta">History record</div>
                   </div>
                 </div>
-                <div class="card-time">${escapeHtml(timeStr)}</div>
               </div>
               <div class="card-body">
                 <div class="message-text">${escapeHtml(h.message_text || '').replace(/\n/g,'<br>')}</div>
+              </div>
+              <div class="card-meta-row">
+                <div class="card-time">${escapeHtml(timeStr)}</div>
               </div>
               <div class="card-footer">
                 ${contactAction}
