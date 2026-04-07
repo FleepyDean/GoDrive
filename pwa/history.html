@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>GoDrive</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><defs><linearGradient id='g'><stop offset='0%' style='stop-color:%232f5bea'/><stop offset='100%' style='stop-color:%2314294f'/></linearGradient></defs><rect fill='url(%23g)' width='192' height='192' rx='40'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-size='90' fill='white' font-weight='bold' font-family='Arial'>🚗</text></svg>">
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-container has-bottom-nav">
+    <header class="header">
+      <div class="header-content">
+        <div class="logo-section">
+          <div>
+            <h1 class="logo-text">GoDrive</h1>
+            <p class="logo-subtext">
+              Contact History
+              <!-- added: history count badge -->
+              <span id="historyBadge" class="history-badge" aria-live="polite" style="display:none">0</span>
+            </p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="fab-mini top-search-btn" id="historySearchBtn" title="Search history">
+          <span class="fab-icon">🔎</span> </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="messages-container" id="historyContainer">
+      <div class="loading-state" id="historyLoading">
+        <div class="loading-spinner"></div>
+        <p>Loading history...</p>
+      </div>
+      <div id="historyList" style="display:none;"></div>
+    </main>
+
+    <button class="floating-clear-btn clear-btn" id="clearHistoryAll" type="button" title="Clear all history">
+      <span class="clear-icon">🗑️</span>
+    </button>
+
+    <div id="historySearchModal" class="modal" aria-hidden="true">
+      <div class="modal-backdrop" id="historySearchBackdrop"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="historySearchTitle">
+        <h3 id="historySearchTitle">Message Filter</h3>
+        <form id="historySearchForm">
+          <label>Date: <input type="text" id="historyFilterDate"></label>
+          <label>Time: <input type="text" id="historyFilterTime"></label>
+          <label>From: <input type="text" id="historyFilterFrom"></label>
+          <label>To: <input type="text" id="historyFilterTo"></label>
+          <label>No. of People: <input type="number" id="historyFilterPeople" min="1"></label>
+          <div class="modal-actions">
+            <button type="submit" class="action-btn btn-primary">Apply</button>
+            <button type="button" id="historySearchClear" class="action-btn btn-secondary">Clear</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <nav class="bottom-nav" aria-label="Main navigation">
+      <a href="index.html" class="bottom-nav-item" title="Home">
+        <span class="bottom-nav-icon">🏠</span>
+        <span class="bottom-nav-label">Home</span>
+      </a>
+      <a href="history.html" class="bottom-nav-item is-active" title="My Rides">
+        <span class="bottom-nav-icon">🚘</span>
+        <span class="bottom-nav-label">History</span>
+      </a>
+      <a href="record.html" class="bottom-nav-item" title="Record">
+        <span class="bottom-nav-icon">🧾</span>
+        <span class="bottom-nav-label">Record</span>
+      </a>
+      <button class="bottom-nav-item" type="button" title="Profile">
+        <span class="bottom-nav-icon">👤</span>
+        <span class="bottom-nav-label">-</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- Profile Modal -->
+        <div id="profileModal" class="modal" aria-hidden="true">
+            <div class="modal-backdrop" id="profileBackdrop"></div>
+            <div class="modal-panel profile-panel" aria-labelledby="profileTitle">
+                <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
+                    <img id="profileImage" src="" alt="avatar" class="profile-img" />
+                    <div id="profileFallback" style="display:none; width:100px; height:100px; border-radius:12px; align-items:center; justify-content:center; background:rgba(255,255,255,0.03); font-size:48px;"></div>
+                </div>
+            </div>
+        </div>
+  </div>
+
+  <script>
+    const API_BASE = '/api';
+    const historyList = document.getElementById('historyList');
+    const historyLoading = document.getElementById('historyLoading');
+    const historySearchBtn = document.getElementById('historySearchBtn');
+    const historySearchModal = document.getElementById('historySearchModal');
+    const historySearchBackdrop = document.getElementById('historySearchBackdrop');
+    const historySearchForm = document.getElementById('historySearchForm');
+    const historyFilterDate = document.getElementById('historyFilterDate');
+    const historyFilterTime = document.getElementById('historyFilterTime');
+    const historyFilterFrom = document.getElementById('historyFilterFrom');
+    const historyFilterTo = document.getElementById('historyFilterTo');
+    const historyFilterPeople = document.getElementById('historyFilterPeople');
+    const historySearchClear = document.getElementById('historySearchClear');
+    let historyFilterCriteria = {
+      date: '',
+      time: '',
+      from: '',
+      to: '',
+      people: ''
+    };
+
+    function escapeHtml(text) {
+      const d = document.createElement('div');
+      d.textContent = text || '';
+      return d.innerHTML;
+    }
+
+    function formatTimeFromIso(iso) {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      } catch (e) { return ''; }
+    }
+
+    function sanitizeName(name) {
+      if (!name) return '';
+      return String(name).replace(/\bNone\b/g, '').replace(/\s+/g, ' ').trim();
+    }
+
+    function getDisplayName(item) {
+      const cleaned = sanitizeName(item.sender_name);
+      return cleaned || `User ${item.sender_id || ''}`;
+    }
+
+    // new: update the badge by counting rendered .message-card elements
+    const historyBadge = document.getElementById('historyBadge');
+    function updateHistoryBadge() {
+      if (!historyBadge) return;
+      const count = Array.from(document.querySelectorAll('#historyList .message-card'))
+        .filter(card => card.style.display !== 'none').length;
+      historyBadge.textContent = String(count);
+      historyBadge.style.display = count > 0 ? 'inline-block' : 'none';
+    }
+
+    function extractSummaryFields(text) {
+      if (!text) return {};
+      const out = {};
+      const dateMatch = text.match(/(?:Date|Tanggal|Hari)\s*[:\-]\s*([^\n\r]+)/i);
+      if (dateMatch && dateMatch[1]) out.date = dateMatch[1].trim();
+      const timeMatch = text.match(/(?:Time|Waktu|Jam)\s*[:\-]\s*([^\n\r]+)/i);
+      if (timeMatch && timeMatch[1]) out.time = timeMatch[1].trim();
+      const fromMatch = text.match(/(?:From)\s*[:\-]\s*([^\n\r]+)/i);
+      if (fromMatch && fromMatch[1]) out.from = fromMatch[1].trim();
+      const toMatch = text.match(/(?:To)\s*[:\-]\s*([^\n\r]+)/i);
+      if (toMatch && toMatch[1]) out.to = toMatch[1].trim();
+      const peopleMatch = text.match(/(?:People|Passengers|Jumlah|Pax|Orang|No of People)\s*[:\-]\s*(\d+)/i)
+        || text.match(/\b(\d+)\s*(?:pax|people|orang|penumpang)\b/i);
+      if (peopleMatch) out.people = (peopleMatch[1] || peopleMatch[0]).trim();
+      return out;
+    }
+
+    function applyHistorySearch() {
+      const criteria = historyFilterCriteria;
+      const cards = historyList.querySelectorAll('.message-card');
+      cards.forEach((card) => {
+        const textEl = card.querySelector('.message-text');
+        const fields = extractSummaryFields((textEl && textEl.textContent) || '');
+
+        const dateValue = (fields.date || '').toLowerCase();
+        const timeValue = (fields.time || '').toLowerCase();
+        const fromValue = (fields.from || '').toLowerCase();
+        const toValue = (fields.to || '').toLowerCase();
+        const peopleValue = (fields.people || '').trim();
+
+        let visible = true;
+        if (criteria.date && !dateValue.includes(criteria.date)) visible = false;
+        if (criteria.time && !timeValue.includes(criteria.time)) visible = false;
+        if (criteria.from && !fromValue.includes(criteria.from)) visible = false;
+        if (criteria.to && !toValue.includes(criteria.to)) visible = false;
+        if (criteria.people && peopleValue !== criteria.people) visible = false;
+
+        card.style.display = visible ? '' : 'none';
+      });
+      updateHistoryBadge();
+    }
+
+    async function loadHistory() {
+      historyLoading.style.display = 'flex';
+      historyList.style.display = 'none';
+      try {
+        const res = await fetch(`${API_BASE}/history`);
+        const data = await res.json();
+        historyList.innerHTML = '';
+        if (data.status === 'ok' && data.history.length > 0) {
+          for (const [index, h] of data.history.entries()) {
+            const card = document.createElement('div');
+            card.className = 'message-card';
+            card.style.animationDelay = `${index * 0.03}s`;
+            card.style.animation = 'slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards';
+            card.setAttribute('data-history-id', h.id);
+
+            const displayName = getDisplayName(h);
+            const initials = displayName
+              .split(' ')
+              .map(n => n[0] || '')
+              .join('')
+              .substring(0,2)
+              .toUpperCase();
+
+            // initial time = contacted_at (fallback). will override with original created_at if available
+            const timeStr = h.contacted_at ? formatTimeFromIso(h.contacted_at) : '';
+
+            const contactUrl = h.contact_url || '#';
+            const encodedHistoryMsg = encodeURIComponent(h.message_text || '');
+
+            let contactAction = '';
+            if (contactUrl && contactUrl !== '#') {
+              if (contactUrl.includes('t.me/')) {
+                contactAction = `<a href="${contactUrl}?text=${encodedHistoryMsg}" class="action-btn btn-primary" target="_blank" style="flex: 1;">💬 Contact</a>`;
+              } else {
+                contactAction = `<a href="${contactUrl}" class="action-btn btn-primary" target="_blank" style="flex: 1;">💬 Contact</a>`;
+              }
+            } else {
+              contactAction = `<button class="action-btn btn-primary" disabled style="flex: 1;">💬 No Contact</button>`;
+            }
+
+            const removeAction = `<button class="action-btn btn-secondary remove-history" data-id="${h.id}" style="flex: 1;">🗑️ Remove</button>`;
+
+            card.innerHTML = `
+              <div class="card-header">
+                <div class="sender-info" style="display:flex; align-items:flex-start; gap:12px; flex:1;">
+                  <div class="sender-avatar avatar-clickable" data-avatar="" data-name="${escapeHtml(displayName)}">
+                    <span class="avatar-fallback">${escapeHtml(initials)}</span>
+                  </div>
+                  <div style="flex:1; min-width:0;">
+                    <div class="sender-name">${escapeHtml(displayName)}</div>
+                    <div class="sender-meta">History record</div>
+                  </div>
+                </div>
+                <div class="card-time">${escapeHtml(timeStr)}</div>
+              </div>
+              <div class="card-body">
+                <div class="message-text">${escapeHtml(h.message_text || '').replace(/\n/g,'<br>')}</div>
+              </div>
+              <div class="card-footer">
+                ${contactAction}
+                ${removeAction}
+              </div>
+            `;
+
+            historyList.appendChild(card);
+
+            // If original message exists, fetch richer info and override time/avatar/meta/text
+            if (h.tg_message_id) {
+              (async () => {
+                try {
+                  const mres = await fetch(`${API_BASE}/messages/${encodeURIComponent(h.tg_message_id)}`);
+                  if (mres.ok) {
+                    const msgData = await mres.json();
+                    if (msgData.status === 'ok' && msgData.message) {
+                      const msg = msgData.message;
+                      const avatarEl = card.querySelector('.sender-avatar');
+                      const metaEl = card.querySelector('.sender-meta');
+                      const nameEl = card.querySelector('.sender-name');
+                      const textEl = card.querySelector('.message-text');
+                      const timeEl = card.querySelector('.card-time');
+
+                      // override group name (meta) if available
+                      if (msg.group_name) metaEl.textContent = msg.group_name;
+
+                      // update avatar (and data-avatar) if available
+                      if (msg.avatar_url) {
+                        avatarEl.dataset.avatar = msg.avatar_url;
+                        avatarEl.innerHTML = `<img src="${escapeHtml(msg.avatar_url)}" alt="avatar" onerror="this.style.display='none'; this.parentElement.classList.add('no-img')"><span class="avatar-fallback" style="display:none">${escapeHtml(initials)}</span>`;
+                      } else {
+                        avatarEl.innerHTML = `<span class="avatar-fallback">${escapeHtml(initials)}</span>`;
+                      }
+
+                      // update displayed message text if original is richer
+                      if (msg.message_text) {
+                        textEl.innerHTML = escapeHtml(msg.message_text).replace(/\n/g,'<br>');
+                      }
+
+                      // use original created_at for time display (primary requirement)
+                      if (msg.created_at) {
+                        timeEl.textContent = formatTimeFromIso(msg.created_at);
+                      }
+                    }
+                  }
+                } catch (e) {
+                  console.warn('History: failed to fetch original message', e);
+                }
+              })();
+            }
+          }
+        } else {
+          historyList.innerHTML = `
+            <div class="loading-state">
+              <div style="font-size: 48px; opacity: 0.5;">🚗</div>
+              <p>No history yet</p>
+            </div>
+          `;
+        }
+      } catch (err) {
+        historyList.innerHTML = `
+          <div class="loading-state">
+            <div style="font-size: 48px; opacity: 0.5;">🚗</div>
+            <p>⚠️ Connection error</p>
+          </div>
+        `;
+      } finally {
+        historyLoading.style.display = 'none';
+        historyList.style.display = 'block';
+        applyHistorySearch();
+      }
+    }
+
+    if (historySearchBtn) {
+      historySearchBtn.addEventListener('click', () => {
+        if (!historySearchModal) return;
+        historyFilterDate.value = historyFilterCriteria.date || '';
+        historyFilterTime.value = historyFilterCriteria.time || '';
+        historyFilterFrom.value = historyFilterCriteria.from || '';
+        historyFilterTo.value = historyFilterCriteria.to || '';
+        historyFilterPeople.value = historyFilterCriteria.people || '';
+        historySearchModal.setAttribute('aria-hidden', 'false');
+        setTimeout(() => historyFilterDate.focus(), 0);
+      });
+    }
+
+    if (historySearchBackdrop) historySearchBackdrop.addEventListener('click', () => {
+      historySearchModal.setAttribute('aria-hidden', 'true');
+    });
+
+    if (historySearchClear) historySearchClear.addEventListener('click', () => {
+      historyFilterCriteria = { date: '', time: '', from: '', to: '', people: '' };
+      historyFilterDate.value = '';
+      historyFilterTime.value = '';
+      historyFilterFrom.value = '';
+      historyFilterTo.value = '';
+      historyFilterPeople.value = '';
+      applyHistorySearch();
+      historySearchModal.setAttribute('aria-hidden', 'true');
+    });
+
+    if (historySearchForm) {
+      historySearchForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        historyFilterCriteria = {
+          date: String(historyFilterDate.value || '').trim().toLowerCase(),
+          time: String(historyFilterTime.value || '').trim().toLowerCase(),
+          from: String(historyFilterFrom.value || '').trim().toLowerCase(),
+          to: String(historyFilterTo.value || '').trim().toLowerCase(),
+          people: String(historyFilterPeople.value || '').trim()
+        };
+        applyHistorySearch();
+        historySearchModal.setAttribute('aria-hidden', 'true');
+      });
+    }
+
+    // delegated Remove handler (works for dynamically created cards)
+    historyList.addEventListener('click', async (ev) => {
+      const btn = ev.target.closest('.remove-history');
+      if (btn) {
+        const id = btn.dataset.id;
+        if (!confirm('Delete this history item?')) return;
+        try {
+          await fetch(`${API_BASE}/history/${encodeURIComponent(id)}`, { method: 'DELETE' });
+          loadHistory();
+        } catch (e) {
+          alert('Failed to delete history item');
+        }
+        return;
+      }
+
+      // avatar click -> open profile modal
+      const avatarBtn = ev.target.closest && ev.target.closest('.avatar-clickable');
+      if (avatarBtn) {
+        const src = avatarBtn.dataset.avatar || '';
+        const name = avatarBtn.dataset.name || '';
+        openProfileModal(src, name);
+      }
+    });
+
+    document.getElementById('clearHistoryAll').addEventListener('click', async () => {
+      if (!confirm('Clear ALL history?')) return;
+      try {
+        const res = await fetch(`${API_BASE}/history`);
+        const data = await res.json();
+        if (data.status === 'ok') {
+          for (const h of data.history) {
+            await fetch(`${API_BASE}/history/${h.id}`, { method: 'DELETE' });
+          }
+        }
+        await loadHistory(); // loadHistory updates badge
+      } catch (err) {
+        alert('Failed to clear');
+      }
+    });
+
+    // ensure initial badge state
+    updateHistoryBadge();
+
+    // --- profile modal logic (history page) ---
+    const profileModal = document.getElementById('profileModal');
+    const profileBackdrop = document.getElementById('profileBackdrop');
+    const profileImage = document.getElementById('profileImage');
+    const profileClose = document.getElementById('profileClose');
+    const profilePanel = profileModal ? profileModal.querySelector('.modal-panel') : null;
+    const profileFallback = document.getElementById('profileFallback');
+
+    function openProfileModal(src, name) {
+      if (!profileModal) return;
+      if (profilePanel) profilePanel.classList.remove('no-img');
+      if (profileFallback) profileFallback.style.display = 'none';
+
+      if (src) {
+        profileImage.src = src;
+        profileImage.onload = () => {
+          if (profilePanel) profilePanel.classList.remove('no-img');
+          if (profileFallback) profileFallback.style.display = 'none';
+        };
+        profileImage.onerror = () => {
+          if (profilePanel) profilePanel.classList.add('no-img');
+          if (profileFallback) {
+            profileFallback.textContent = (name || '').split(' ').map(n => n[0]||'').slice(0,2).join('').toUpperCase();
+            profileFallback.style.display = 'flex';
+          }
+          profileImage.src = '';
+        };
+      } else {
+        if (profilePanel) profilePanel.classList.add('no-img');
+        if (profileFallback) {
+          profileFallback.textContent = (name || '').split(' ').map(n => n[0]||'').slice(0,2).join('').toUpperCase();
+          profileFallback.style.display = 'flex';
+        }
+        profileImage.src = '';
+      }
+
+      profileModal.setAttribute('aria-hidden', 'false');
+    }
+
+    function closeProfileModal() {
+      if (!profileModal) return;
+      profileModal.setAttribute('aria-hidden', 'true');
+      if (profileImage) profileImage.src = '';
+      if (profileFallback) profileFallback.style.display = 'none';
+      if (profilePanel) profilePanel.classList.remove('no-img');
+    }
+
+    if (profileBackdrop) profileBackdrop.addEventListener('click', closeProfileModal);
+    if (profileClose) profileClose.addEventListener('click', closeProfileModal);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeProfileModal(); });
+
+    loadHistory();
+  </script>
+</body>
+</html>

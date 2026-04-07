@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#2f5bea">
+    <meta name="description" content="GoDrive - Real-time Ride Requests">
+    <title>GoDrive</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><defs><linearGradient id='g'><stop offset='0%' style='stop-color:%232f5bea'/><stop offset='100%' style='stop-color:%2314294f'/></linearGradient></defs><rect fill='url(%23g)' width='192' height='192' rx='40'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-size='90' fill='white' font-weight='bold' font-family='Arial'>🚗</text></svg>">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container has-bottom-nav">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo-section">
+                    <div>
+                        <h1 class="logo-text">GoDrive</h1>
+                        <p class="logo-subtext">
+                            Ride Requests
+                            <span id="requestsBadge" class="history-badge" aria-live="polite" style="display:none">0</span>
+                        </p>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button class="fab-mini top-search-btn" id="filterBtn" title="Search">
+                        <span class="fab-icon">🔎</span>
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="messages-container" id="messagesContainer">
+            <div class="loading-state">
+                <div class="loading-spinner"></div>
+                <p>Loading requests...</p>
+            </div>
+        </main>
+
+        <button class="floating-clear-btn clear-btn" id="clearBtn" type="button" title="Clear all requests">
+            <span class="clear-icon">🗑️</span>
+        </button>
+
+        <nav class="bottom-nav" aria-label="Main navigation">
+            <a href="index.html" class="bottom-nav-item is-active" type="button" title="Home">
+                <span class="bottom-nav-icon">🏠</span>
+                <span class="bottom-nav-label">Home</span>
+            </a>
+            <a href="history.html" class="bottom-nav-item" title="My Rides">
+                <span class="bottom-nav-icon">🚘</span>
+                <span class="bottom-nav-label">History</span>
+            </a>
+            <a href="record.html" class="bottom-nav-item" title="Record">
+                <span class="bottom-nav-icon">🧾</span>
+                <span class="bottom-nav-label">Record</span>
+            </a>
+            <button class="bottom-nav-item" type="button" title="Profile">
+                <span class="bottom-nav-icon">👤</span>
+                <span class="bottom-nav-label">-</span>
+            </button>
+        </nav>
+
+        <!-- Toast Notification -->
+        <div class="toast" id="toast"></div>
+
+        <!-- Filter Modal -->
+        <div id="filterModal" class="modal" aria-hidden="true">
+            <div class="modal-backdrop" id="filterBackdrop"></div>
+            <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="filterTitle">
+                <h3 id="filterTitle">Message Filter</h3>
+                <form id="filterForm">
+                    <label>Date: <input type="text" id="filterDate"></label>
+                    <label>Time: <input type="text" id="filterTime"></label>
+                    <label>From: <input type="text" id="filterFrom"></label>
+                    <label>To: <input type="text" id="filterTo"></label>
+                    <label>No. of People: <input type="number" id="filterPeople" min="1"></label>
+                    <div class="modal-actions">
+                        <button type="button" id="applyFilter" class="action-btn btn-primary">Apply</button>
+                        <button type="button" id="clearFilter" class="action-btn btn-secondary">Clear</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Profile Modal -->
+        <div id="profileModal" class="modal" aria-hidden="true">
+            <div class="modal-backdrop" id="profileBackdrop"></div>
+            <div class="modal-panel profile-panel" aria-labelledby="profileTitle">
+                <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
+                    <img id="profileImage" src="" alt="avatar" class="profile-img" />
+                    <div id="profileFallback" style="display:none; width:100px; height:100px; border-radius:12px; align-items:center; justify-content:center; background:rgba(255,255,255,0.03); font-size:48px;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/clipboard.js/2.0.11/clipboard.min.js"></script>
+    <script src="app.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js').catch(e => console.log('SW registration failed:', e));
+        }
+    </script>
+</body>
+</html>

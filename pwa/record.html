@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#2f5bea" />
+  <title>GoDrive - Record</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><defs><linearGradient id='g'><stop offset='0%' style='stop-color:%232f5bea'/><stop offset='100%' style='stop-color:%2314294f'/></linearGradient></defs><rect fill='url(%23g)' width='192' height='192' rx='40'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-size='90' fill='white' font-weight='bold' font-family='Arial'>🚗</text></svg>">
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-container has-bottom-nav">
+    <header class="header">
+      <div class="header-content">
+        <div class="logo-section">
+          <div>
+            <h1 class="logo-text">GoDrive</h1>
+            <p class="logo-subtext">Driving Record</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="fab-mini top-search-btn" id="recordSearchBtn" title="Search sessions">
+            <span class="fab-icon">🔎</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="messages-container" id="recordContainer">
+      <section class="record-panel">
+        <div class="record-panel-title">Current Session</div>
+        <div class="record-timer" id="sessionTimer">00:00:00</div>
+        <div class="record-status" id="sessionStatus">Not started</div>
+
+        <div class="record-stat-grid">
+          <div class="record-stat-item">
+            <div class="record-stat-label">Start Mileage</div>
+            <div class="record-stat-value" id="startMileageValue">-</div>
+          </div>
+          <div class="record-stat-item">
+            <div class="record-stat-label">Elapsed</div>
+            <div class="record-stat-value" id="elapsedValue">0m</div>
+          </div>
+        </div>
+
+        <div class="record-controls">
+          <button class="action-btn btn-primary" id="startBtn" type="button">Start</button>
+          <button class="action-btn btn-secondary" id="pauseBtn" type="button" disabled>Pause</button>
+          <button class="action-btn btn-secondary" id="stopBtn" type="button" disabled>Stop</button>
+        </div>
+      </section>
+
+      <section class="record-panel">
+        <div class="record-panel-title">Session History</div>
+        <div id="recordList" class="record-list"></div>
+      </section>
+    </main>
+
+    <button class="floating-clear-btn clear-btn" id="clearRecordAll" type="button" title="Clear all record sessions">
+      <span class="clear-icon">🗑️</span>
+    </button>
+
+    <div id="recordFilterModal" class="modal" aria-hidden="true">
+      <div class="modal-backdrop" id="recordFilterBackdrop"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="recordFilterTitle">
+        <h3 id="recordFilterTitle">Session Filter</h3>
+        <form id="recordFilterForm">
+          <label>Distance (KM): <input type="text" id="recordFilterDistance"></label>
+          <label>Fuel Efficiency (KM/L): <input type="text" id="recordFilterEfficiency"></label>
+          <label>Fuel Used (L): <input type="text" id="recordFilterFuelUsed"></label>
+          <div class="modal-actions">
+            <button type="submit" class="action-btn btn-primary">Apply</button>
+            <button type="button" id="recordFilterClear" class="action-btn btn-secondary">Clear</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="recordStartModal" class="modal" aria-hidden="true">
+      <div class="modal-backdrop" id="recordStartBackdrop"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="recordStartTitle">
+        <h3 id="recordStartTitle">Start Session</h3>
+        <form id="recordStartForm">
+          <label>Start Mileage (KM): <input type="number" id="recordStartMileage" min="0" step="0.1"></label>
+          <div class="modal-actions">
+            <button type="submit" class="action-btn btn-primary">Apply</button>
+            <button type="button" id="recordStartClear" class="action-btn btn-secondary">Clear</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="recordStopModal" class="modal" aria-hidden="true">
+      <div class="modal-backdrop" id="recordStopBackdrop"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="recordStopTitle">
+        <h3 id="recordStopTitle">Stop Session</h3>
+        <form id="recordStopForm">
+          <label>End Mileage (KM): <input type="number" id="recordEndMileage" min="0" step="0.1"></label>
+          <label>Fuel Efficiency (KM/L): <input type="number" id="recordStopEfficiency" min="0" step="0.1"></label>
+          <div class="modal-actions">
+            <button type="submit" class="action-btn btn-primary">Apply</button>
+            <button type="button" id="recordStopClear" class="action-btn btn-secondary">Clear</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="recordEditModal" class="modal" aria-hidden="true">
+      <div class="modal-backdrop" id="recordEditBackdrop"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="recordEditTitle">
+        <h3 id="recordEditTitle">Edit Session</h3>
+        <form id="recordEditForm">
+          <label>End Mileage: <input type="number" id="recordEditEndMileage" min="0" step="0.1"></label>
+          <label>Fuel Efficiency (KM/L): <input type="number" id="recordEditEfficiency" min="0" step="0.1"></label>
+          <div class="modal-actions">
+            <button type="submit" class="action-btn btn-primary">Apply</button>
+            <button type="button" id="recordEditCancel" class="action-btn btn-secondary">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <nav class="bottom-nav" aria-label="Main navigation">
+      <a href="index.html" class="bottom-nav-item" title="Home">
+        <span class="bottom-nav-icon">🏠</span>
+        <span class="bottom-nav-label">Home</span>
+      </a>
+      <a href="history.html" class="bottom-nav-item" title="My Rides">
+        <span class="bottom-nav-icon">🚘</span>
+        <span class="bottom-nav-label">History</span>
+      </a>
+      <a href="record.html" class="bottom-nav-item is-active" title="Record">
+        <span class="bottom-nav-icon">🧾</span>
+        <span class="bottom-nav-label">Record</span>
+      </a>
+      <button class="bottom-nav-item" type="button" title="Profile">
+        <span class="bottom-nav-icon">👤</span>
+        <span class="bottom-nav-label">-</span>
+      </button>
+    </nav>
+
+    <div class="toast" id="recordToast"></div>
+  </div>
+
+  <script>
+    const FUEL_PRICE_PER_LITER = 1.99;
+    const ACTIVE_SESSION_KEY = 'godrive_record_active_session';
+    const SESSION_LOG_KEY = 'godrive_record_sessions';
+
+    const timerEl = document.getElementById('sessionTimer');
+    const statusEl = document.getElementById('sessionStatus');
+    const startMileageEl = document.getElementById('startMileageValue');
+    const elapsedEl = document.getElementById('elapsedValue');
+    const startBtn = document.getElementById('startBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const recordListEl = document.getElementById('recordList');
+    const recordToast = document.getElementById('recordToast');
+    const recordSearchBtn = document.getElementById('recordSearchBtn');
+    const clearRecordAll = document.getElementById('clearRecordAll');
+    const recordFilterModal = document.getElementById('recordFilterModal');
+    const recordFilterBackdrop = document.getElementById('recordFilterBackdrop');
+    const recordFilterForm = document.getElementById('recordFilterForm');
+    const recordFilterDistance = document.getElementById('recordFilterDistance');
+    const recordFilterEfficiency = document.getElementById('recordFilterEfficiency');
+    const recordFilterFuelUsed = document.getElementById('recordFilterFuelUsed');
+    const recordFilterClear = document.getElementById('recordFilterClear');
+    const recordStartModal = document.getElementById('recordStartModal');
+    const recordStartBackdrop = document.getElementById('recordStartBackdrop');
+    const recordStartForm = document.getElementById('recordStartForm');
+    const recordStartMileage = document.getElementById('recordStartMileage');
+    const recordStartClear = document.getElementById('recordStartClear');
+    const recordStopModal = document.getElementById('recordStopModal');
+    const recordStopBackdrop = document.getElementById('recordStopBackdrop');
+    const recordStopForm = document.getElementById('recordStopForm');
+    const recordEndMileage = document.getElementById('recordEndMileage');
+    const recordStopEfficiency = document.getElementById('recordStopEfficiency');
+    const recordStopClear = document.getElementById('recordStopClear');
+    const recordEditModal = document.getElementById('recordEditModal');
+    const recordEditBackdrop = document.getElementById('recordEditBackdrop');
+    const recordEditForm = document.getElementById('recordEditForm');
+    const recordEditEndMileage = document.getElementById('recordEditEndMileage');
+    const recordEditEfficiency = document.getElementById('recordEditEfficiency');
+    const recordEditCancel = document.getElementById('recordEditCancel');
+
+    let activeSession = loadActiveSession();
+    let sessions = loadSessions();
+    let editingSessionId = null;
+    let recordFilterCriteria = {
+      distance: '',
+      efficiency: '',
+      fuelUsed: ''
+    };
+
+    function loadActiveSession() {
+      try {
+        const raw = localStorage.getItem(ACTIVE_SESSION_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function saveActiveSession() {
+      if (!activeSession) {
+        localStorage.removeItem(ACTIVE_SESSION_KEY);
+        return;
+      }
+      localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(activeSession));
+    }
+
+    function loadSessions() {
+      try {
+        const raw = localStorage.getItem(SESSION_LOG_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return parsed.map((s) => ({
+          id: s.id || `session-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+          ...s
+        }));
+      } catch {
+        return [];
+      }
+    }
+
+    function makeSessionId() {
+      return `session-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    }
+
+    function findSessionById(id) {
+      return sessions.find((s) => s.id === id);
+    }
+
+    function saveSessions() {
+      localStorage.setItem(SESSION_LOG_KEY, JSON.stringify(sessions));
+    }
+
+    function showToast(message, type = 'success') {
+      recordToast.textContent = message;
+      recordToast.className = `toast show ${type}`;
+      setTimeout(() => {
+        recordToast.classList.remove('show');
+      }, 2500);
+    }
+
+    function formatDuration(ms) {
+      const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+      const hours = String(Math.floor(totalSeconds / 3600)).padStart(2, '0');
+      const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0');
+      const seconds = String(totalSeconds % 60).padStart(2, '0');
+      return `${hours}:${minutes}:${seconds}`;
+    }
+
+    function formatDateTime(iso) {
+      const d = new Date(iso);
+      return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    }
+
+    function getSessionEfficiency(session) {
+      const efficiency = Number(session.kmPerLiter);
+      if (Number.isFinite(efficiency) && efficiency > 0) return efficiency;
+      const legacyRate = Number(session.fuelRate);
+      if (Number.isFinite(legacyRate) && legacyRate > 0) return 100 / legacyRate;
+      return 0;
+    }
+
+    function getElapsedMs() {
+      if (!activeSession) return 0;
+      if (activeSession.status === 'running') {
+        return activeSession.accumulatedMs + (Date.now() - activeSession.lastResumeTs);
+      }
+      return activeSession.accumulatedMs;
+    }
+
+    function updateSessionUI() {
+      if (!activeSession) {
+        timerEl.textContent = '00:00:00';
+        statusEl.textContent = 'Not started';
+        startMileageEl.textContent = '-';
+        elapsedEl.textContent = '0m';
+        startBtn.disabled = false;
+        pauseBtn.disabled = true;
+        stopBtn.disabled = true;
+        pauseBtn.textContent = 'Pause';
+        return;
+      }
+
+      const elapsed = getElapsedMs();
+      timerEl.textContent = formatDuration(elapsed);
+      elapsedEl.textContent = `${Math.floor(elapsed / 60000)}m`;
+      startMileageEl.textContent = `${Number(activeSession.startMileage).toFixed(1)} km`;
+      statusEl.textContent = activeSession.status === 'running' ? 'Running' : 'Paused';
+
+      startBtn.disabled = true;
+      pauseBtn.disabled = false;
+      stopBtn.disabled = false;
+      pauseBtn.textContent = activeSession.status === 'running' ? 'Pause' : 'Resume';
+    }
+
+    function renderSessions() {
+      const list = sessions
+        .filter((s) => {
+          const c = recordFilterCriteria;
+          if (!c.distance && !c.efficiency && !c.fuelUsed) return true;
+
+          const distanceStr = String(Number(s.distanceKm || 0).toFixed(1));
+          const efficiencyStr = String(Number(getSessionEfficiency(s)).toFixed(1));
+          const fuelUsedStr = String(Number(s.litersUsed || 0).toFixed(2));
+
+          if (c.distance && !distanceStr.includes(c.distance)) return false;
+          if (c.efficiency && !efficiencyStr.includes(c.efficiency)) return false;
+          if (c.fuelUsed && !fuelUsedStr.includes(c.fuelUsed)) return false;
+          return true;
+        })
+        .sort((a, b) => new Date(b.endedAt) - new Date(a.endedAt));
+
+      if (list.length === 0) {
+        recordListEl.innerHTML = '<div class="loading-state" style="height:auto; padding:12px 0;"><p>No sessions yet</p></div>';
+        return;
+      }
+
+      recordListEl.innerHTML = list.map((s) => `
+        <article class="message-card record-session-card">
+          <div class="card-header">
+            <div>
+              <div class="sender-name">Session ${formatDateTime(s.startedAt)}</div>
+              <div class="sender-meta">Duration: ${formatDuration(s.durationMs)}</div>
+            </div>
+            <div class="card-time">RM ${Number(s.fuelCost).toFixed(2)}</div>
+          </div>
+          <div class="card-body">
+            ${(() => {
+              const efficiency = getSessionEfficiency(s);
+              return `<div class="message-text">Distance: ${Number(s.distanceKm).toFixed(1)} km<br>
+            Fuel Efficiency: ${efficiency.toFixed(1)} km/L<br>
+            Fuel Used: ${Number(s.litersUsed).toFixed(2)} L<br>
+            Start Mileage: ${Number(s.startMileage).toFixed(1)} km<br>
+            End Mileage: ${Number(s.endMileage).toFixed(1)} km</div>`;
+            })()}
+          </div>
+          <div class="card-footer">
+            <button class="action-btn btn-secondary record-edit-btn" type="button" data-id="${s.id}" style="flex: 1;">✏️ Edit</button>
+            <button class="action-btn btn-secondary record-remove-btn" type="button" data-id="${s.id}" style="flex: 1;">🗑️ Remove</button>
+          </div>
+        </article>
+      `).join('');
+    }
+
+    startBtn.addEventListener('click', () => {
+      if (activeSession) return;
+      if (!recordStartModal) return;
+      recordStartMileage.value = '';
+      recordStartModal.setAttribute('aria-hidden', 'false');
+      setTimeout(() => recordStartMileage.focus(), 0);
+    });
+
+    pauseBtn.addEventListener('click', () => {
+      if (!activeSession) return;
+
+      if (activeSession.status === 'running') {
+        activeSession.accumulatedMs += Date.now() - activeSession.lastResumeTs;
+        activeSession.lastResumeTs = null;
+        activeSession.status = 'paused';
+        showToast('Session paused', 'success');
+      } else {
+        activeSession.lastResumeTs = Date.now();
+        activeSession.status = 'running';
+        showToast('Session resumed', 'success');
+      }
+
+      saveActiveSession();
+      updateSessionUI();
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (!activeSession) return;
+
+      const startMileage = Number(activeSession.startMileage || 0);
+      if (!recordStopModal) return;
+      recordEndMileage.value = startMileage ? String(startMileage.toFixed(1)) : '';
+      recordEndMileage.min = String(startMileage);
+      recordStopEfficiency.value = '';
+      recordStopModal.setAttribute('aria-hidden', 'false');
+      setTimeout(() => recordEndMileage.focus(), 0);
+    });
+
+    if (recordSearchBtn) {
+      recordSearchBtn.addEventListener('click', () => {
+        if (!recordFilterModal) return;
+        recordFilterDistance.value = recordFilterCriteria.distance;
+        recordFilterEfficiency.value = recordFilterCriteria.efficiency;
+        recordFilterFuelUsed.value = recordFilterCriteria.fuelUsed;
+        recordFilterModal.setAttribute('aria-hidden', 'false');
+        setTimeout(() => recordFilterDistance.focus(), 0);
+      });
+    }
+
+    if (recordFilterBackdrop) recordFilterBackdrop.addEventListener('click', () => {
+      recordFilterModal.setAttribute('aria-hidden', 'true');
+    });
+
+    if (recordFilterClear) recordFilterClear.addEventListener('click', () => {
+      recordFilterCriteria = { distance: '', efficiency: '', fuelUsed: '' };
+      recordFilterDistance.value = '';
+      recordFilterEfficiency.value = '';
+      recordFilterFuelUsed.value = '';
+      renderSessions();
+      recordFilterModal.setAttribute('aria-hidden', 'true');
+    });
+
+    if (recordFilterForm) {
+      recordFilterForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        recordFilterCriteria = {
+          distance: String(recordFilterDistance.value || '').trim(),
+          efficiency: String(recordFilterEfficiency.value || '').trim(),
+          fuelUsed: String(recordFilterFuelUsed.value || '').trim()
+        };
+        renderSessions();
+        recordFilterModal.setAttribute('aria-hidden', 'true');
+      });
+    }
+
+    if (recordStartBackdrop) recordStartBackdrop.addEventListener('click', () => {
+      recordStartModal.setAttribute('aria-hidden', 'true');
+    });
+
+    if (recordStartClear) recordStartClear.addEventListener('click', () => {
+      recordStartMileage.value = '';
+      recordStartModal.setAttribute('aria-hidden', 'true');
+    });
+
+    if (recordStartForm) {
+      recordStartForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const startMileage = Number(recordStartMileage.value);
+        if (!Number.isFinite(startMileage) || startMileage < 0) {
+          showToast('Please enter a valid mileage', 'error');
+          return;
+        }
+
+        activeSession = {
+          id: makeSessionId(),
+          status: 'running',
+          startedAt: new Date().toISOString(),
+          startMileage,
+          accumulatedMs: 0,
+          lastResumeTs: Date.now()
+        };
+
+        saveActiveSession();
+        updateSessionUI();
+        recordStartModal.setAttribute('aria-hidden', 'true');
+        showToast('Session started', 'success');
+      });
+    }
+
+    if (recordStopBackdrop) recordStopBackdrop.addEventListener('click', () => {
+      recordStopModal.setAttribute('aria-hidden', 'true');
+    });
+
+    if (recordStopClear) recordStopClear.addEventListener('click', () => {
+      if (!activeSession) {
+        recordEndMileage.value = '';
+      } else {
+        const startMileage = Number(activeSession.startMileage || 0);
+        recordEndMileage.value = startMileage ? String(startMileage.toFixed(1)) : '';
+      }
+      recordStopEfficiency.value = '';
+      recordStopModal.setAttribute('aria-hidden', 'true');
+    });
+
+    if (recordStopForm) {
+      recordStopForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        if (!activeSession) {
+          recordStopModal.setAttribute('aria-hidden', 'true');
+          return;
+        }
+
+        const currentMileage = Number(recordEndMileage.value);
+        if (!Number.isFinite(currentMileage) || currentMileage < 0) {
+          showToast('Please enter a valid end mileage', 'error');
+          return;
+        }
+
+        const startMileage = Number(activeSession.startMileage);
+        if (currentMileage < startMileage) {
+          showToast('End mileage cannot be less than start mileage', 'error');
+          return;
+        }
+
+        const kmPerLiter = Number(recordStopEfficiency.value);
+        if (!Number.isFinite(kmPerLiter) || kmPerLiter <= 0) {
+          showToast('Please enter a valid km/L value', 'error');
+          return;
+        }
+
+        const distanceKm = currentMileage - startMileage;
+        const durationMs = getElapsedMs();
+        const litersUsed = distanceKm / kmPerLiter;
+        const fuelCost = litersUsed * FUEL_PRICE_PER_LITER;
+        const endedAt = new Date().toISOString();
+
+        sessions.push({
+          id: activeSession.id || makeSessionId(),
+          startedAt: activeSession.startedAt,
+          endedAt,
+          durationMs,
+          distanceKm,
+          kmPerLiter,
+          litersUsed,
+          fuelCost,
+          startMileage,
+          endMileage: currentMileage
+        });
+
+        saveSessions();
+        activeSession = null;
+        saveActiveSession();
+        updateSessionUI();
+        renderSessions();
+        recordStopModal.setAttribute('aria-hidden', 'true');
+        showToast(`Saved. Fuel cost RM ${fuelCost.toFixed(2)} at RM${FUEL_PRICE_PER_LITER.toFixed(2)}/L`, 'success');
+      });
+    }
+
+    if (recordListEl) {
+      recordListEl.addEventListener('click', (event) => {
+        const editBtn = event.target.closest('.record-edit-btn');
+        if (editBtn) {
+          const session = findSessionById(editBtn.dataset.id);
+          if (!session || !recordEditModal) return;
+          editingSessionId = session.id;
+          recordEditEndMileage.value = String(Number(session.endMileage || 0).toFixed(1));
+          recordEditEndMileage.min = String(Number(session.startMileage || 0));
+          recordEditEfficiency.value = String(Number(getSessionEfficiency(session)).toFixed(1));
+          recordEditModal.setAttribute('aria-hidden', 'false');
+          setTimeout(() => recordEditEndMileage.focus(), 0);
+          return;
+        }
+
+        const removeBtn = event.target.closest('.record-remove-btn');
+        if (removeBtn) {
+          const id = removeBtn.dataset.id;
+          if (!id) return;
+          if (!confirm('Remove this session?')) return;
+          sessions = sessions.filter((s) => s.id !== id);
+          saveSessions();
+          renderSessions();
+          showToast('Session removed', 'success');
+        }
+      });
+    }
+
+    if (recordEditBackdrop) recordEditBackdrop.addEventListener('click', () => {
+      editingSessionId = null;
+      recordEditModal.setAttribute('aria-hidden', 'true');
+    });
+
+    if (recordEditCancel) recordEditCancel.addEventListener('click', () => {
+      editingSessionId = null;
+      recordEditModal.setAttribute('aria-hidden', 'true');
+    });
+
+    if (recordEditForm) {
+      recordEditForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const session = findSessionById(editingSessionId);
+        if (!session) {
+          recordEditModal.setAttribute('aria-hidden', 'true');
+          return;
+        }
+
+        const newEndMileage = Number(recordEditEndMileage.value);
+        const newEfficiency = Number(recordEditEfficiency.value);
+        const startMileage = Number(session.startMileage || 0);
+
+        if (!Number.isFinite(newEndMileage) || newEndMileage < startMileage) {
+          showToast('End mileage must be valid and not below start mileage', 'error');
+          return;
+        }
+        if (!Number.isFinite(newEfficiency) || newEfficiency <= 0) {
+          showToast('Please enter a valid km/L value', 'error');
+          return;
+        }
+
+        const distanceKm = newEndMileage - startMileage;
+        const litersUsed = distanceKm / newEfficiency;
+        const fuelCost = litersUsed * FUEL_PRICE_PER_LITER;
+
+        session.endMileage = newEndMileage;
+        session.distanceKm = distanceKm;
+        session.kmPerLiter = newEfficiency;
+        session.litersUsed = litersUsed;
+        session.fuelCost = fuelCost;
+
+        saveSessions();
+        renderSessions();
+        editingSessionId = null;
+        recordEditModal.setAttribute('aria-hidden', 'true');
+        showToast('Session updated', 'success');
+      });
+    }
+
+    if (clearRecordAll) {
+      clearRecordAll.addEventListener('click', () => {
+        if (sessions.length === 0) {
+          showToast('No sessions to clear', 'success');
+          return;
+        }
+        if (!confirm('Clear ALL record sessions?')) return;
+        sessions = [];
+        saveSessions();
+        renderSessions();
+        showToast('All sessions cleared', 'success');
+      });
+    }
+
+    setInterval(() => {
+      if (activeSession && activeSession.status === 'running') {
+        updateSessionUI();
+        saveActiveSession();
+      }
+    }, 1000);
+
+    updateSessionUI();
+    renderSessions();
+  </script>
+</body>
+</html>
