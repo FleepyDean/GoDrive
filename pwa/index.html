@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#2f5bea">
+    <meta name="theme-color" content="#fafaf7">
     <meta name="description" content="GoDrive - Real-time Ride Requests">
     <title>GoDrive</title>
     <link rel="manifest" href="manifest.json">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><defs><linearGradient id='g'><stop offset='0%' style='stop-color:%232f5bea'/><stop offset='100%' style='stop-color:%2314294f'/></linearGradient></defs><rect fill='url(%23g)' width='192' height='192' rx='40'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-size='90' fill='white' font-weight='bold' font-family='Arial'>🚗</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect fill='%230a0a0a' width='192' height='192' rx='38'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' font-size='80' fill='white' font-weight='700' font-family='Inter,sans-serif' letter-spacing='-3'>GD</text></svg>">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -19,7 +19,7 @@
                     <div>
                         <h1 class="logo-text">GoDrive</h1>
                         <p class="logo-subtext">
-                            Ride Requests
+                            Live requests
                             <span id="requestsBadge" class="history-badge" aria-live="polite" style="display:none">0</span>
                         </p>
                     </div>
@@ -44,6 +44,10 @@
             <span class="clear-icon">🗑️</span>
         </button>
 
+        <button class="floating-jump-btn clear-btn" id="jumpBottomBtn" type="button" title="Jump to latest">
+            <span class="clear-icon">⬇️</span>
+        </button>
+
         <nav class="bottom-nav" aria-label="Main navigation">
             <a href="index.html" class="bottom-nav-item is-active" type="button" title="Home">
                 <span class="bottom-nav-icon">🏠</span>
@@ -52,10 +56,6 @@
             <a href="history.html" class="bottom-nav-item" title="My Rides">
                 <span class="bottom-nav-icon">🚘</span>
                 <span class="bottom-nav-label">History</span>
-            </a>
-            <a href="record.html" class="bottom-nav-item" title="Record">
-                <span class="bottom-nav-icon">🧾</span>
-                <span class="bottom-nav-label">Record</span>
             </a>
             <button class="bottom-nav-item" type="button" title="Profile">
                 <span class="bottom-nav-icon">👤</span>

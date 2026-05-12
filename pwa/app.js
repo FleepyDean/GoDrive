@@ -1,14 +1,14 @@
 const API_BASE = '/api';
-let autoRefreshInterval = null;
-const REFRESH_INTERVAL = 800; // faster sync so deletes disappear quickly
 let lastMessages = []; // Track previous messages for diffing
 let shouldStickOnNextRender = true;
 let hasAnchoredInitialView = false;
+let preserveDistanceFromBottomOnNextRender = null;
+let _sseSource = null;
 
 // DOM Elements
 const messagesContainer = document.getElementById('messagesContainer');
 const clearBtn = document.getElementById('clearBtn');
-const fabBtn = document.getElementById('fabBtn');
+const jumpBottomBtn = document.getElementById('jumpBottomBtn');
 const toast = document.getElementById('toast');
 const requestsBadge = document.getElementById('requestsBadge'); // new
 
@@ -39,11 +39,11 @@ const closeFilterBtn = document.getElementById('closeFilter');
 
 function openFilterModal() {
     // populate inputs from current criteria
-    filterDate.value = filterCriteria.date || '';
-    filterTime.value = filterCriteria.time || '';
-    filterFrom.value = filterCriteria.from || '';
-    filterTo.value = filterCriteria.to || '';
-    filterPeople.value = filterCriteria.people || '';
+    if (filterDate) filterDate.value = filterCriteria.date || '';
+    if (filterTime) filterTime.value = filterCriteria.time || '';
+    if (filterFrom) filterFrom.value = filterCriteria.from || '';
+    if (filterTo) filterTo.value = filterCriteria.to || '';
+    if (filterPeople) filterPeople.value = filterCriteria.people || '';
     filterModal.setAttribute('aria-hidden', 'false');
 }
 function closeFilterModal() {
@@ -56,11 +56,11 @@ closeFilterBtn && closeFilterBtn.addEventListener('click', closeFilterModal);
 
 applyFilterBtn && applyFilterBtn.addEventListener('click', () => {
     filterCriteria = {
-        date: (filterDate.value || '').trim().toLowerCase(),
-        time: (filterTime.value || '').trim().toLowerCase(),
-        from: (filterFrom.value || '').trim().toLowerCase(),
-        to: (filterTo.value || '').trim().toLowerCase(),
-        people: (filterPeople.value || '').trim()
+        date: (filterDate?.value || '').trim().toLowerCase(),
+        time: (filterTime?.value || '').trim().toLowerCase(),
+        from: (filterFrom?.value || '').trim().toLowerCase(),
+        to: (filterTo?.value || '').trim().toLowerCase(),
+        people: (filterPeople?.value || '').trim()
     };
     lastMessages = []; // force re-render
     closeFilterModal();
@@ -69,7 +69,11 @@ applyFilterBtn && applyFilterBtn.addEventListener('click', () => {
 
 clearFilterBtn && clearFilterBtn.addEventListener('click', () => {
     filterCriteria = { date: '', time: '', from: '', to: '', people: '' };
-    filterDate.value = filterTime.value = filterFrom.value = filterTo.value = filterPeople.value = '';
+    if (filterDate) filterDate.value = '';
+    if (filterTime) filterTime.value = '';
+    if (filterFrom) filterFrom.value = '';
+    if (filterTo) filterTo.value = '';
+    if (filterPeople) filterPeople.value = '';
     lastMessages = [];
     closeFilterModal();
     loadMessages();
@@ -77,12 +81,13 @@ clearFilterBtn && clearFilterBtn.addEventListener('click', () => {
 
 // wire core buttons safely
 if (clearBtn) clearBtn.addEventListener('click', clearAllMessages);
-if (fabBtn) fabBtn.addEventListener('click', toggleAutoRefresh);
+if (jumpBottomBtn) jumpBottomBtn.addEventListener('click', jumpToLatest);
+if (messagesContainer) messagesContainer.addEventListener('scroll', updateJumpButtonVisibility, { passive: true });
 
-// Initial load
+// Initial load + SSE
 console.log('🚀 Initializing GoDrive...');
 loadMessages();
-startAutoRefresh();
+connectSSE();
 
 function showToast(message, type = 'success') {
     toast.textContent = message;
@@ -111,22 +116,34 @@ function stickFeedToBottom() {
     setTimeout(pin, 180);
 }
 
+function jumpToLatest() {
+    if (!messagesContainer) return;
+    messagesContainer.scrollTo({
+        top: messagesContainer.scrollHeight,
+        behavior: 'smooth'
+    });
+}
+
+function updateJumpButtonVisibility() {
+    if (!jumpBottomBtn || !messagesContainer) return;
+    const shouldHide = isFeedNearBottom(24);
+    jumpBottomBtn.classList.toggle('is-hidden', shouldHide);
+}
+
 async function loadMessages() {
     try {
-        const wasNearBottom = isFeedNearBottom();
-        console.log('📡 Fetching messages...');
+        console.log('📡 Fetching messages (initial load)...');
         const res = await fetch(`${API_BASE}/messages`);
         const data = await res.json();
-
         if (data.status === 'ok') {
-            let messages = data.messages || [];
-            // apply form filter
-            messages = applyFormFilter(messages);
-            // Chat flow: old requests at top, newest at bottom.
+            let messages = applyFormFilter(data.messages || []);
             messages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            lastMessages = [];
+            shouldStickOnNextRender = true;
             if (messages.length > 0) {
                 console.log(`✅ Loaded ${messages.length} messages`);
-                renderMessagesWithDiff(messages, { wasNearBottom });
+                renderMessages(messages);
+                lastMessages = JSON.parse(JSON.stringify(messages));
             } else {
                 messagesContainer.innerHTML = `
                     <div class="loading-state">
@@ -134,7 +151,6 @@ async function loadMessages() {
                         <p>${(filterCriteria.date || filterCriteria.time || filterCriteria.from || filterCriteria.to || filterCriteria.people) ? 'No requests match your filter' : 'No requests yet. Waiting for rides...'}</p>
                     </div>
                 `;
-                lastMessages = [];
             }
         } else {
             messagesContainer.innerHTML = '<div class="loading-state"><p>⚠️ Error loading requests</p></div>';
@@ -179,63 +195,6 @@ function applyFormFilter(messages) {
     });
 }
 
-function renderMessagesWithDiff(newMessages, options = {}) {
-    // Check if messages have changed (including content changes)
-    const hasChanges = checkForChanges(lastMessages, newMessages);
-    const wasNearBottom = options.wasNearBottom ?? isFeedNearBottom();
-    const hadNoPreviousMessages = lastMessages.length === 0;
-    const previousTailId = lastMessages[lastMessages.length - 1]?.tg_message_id;
-    const nextTailId = newMessages[newMessages.length - 1]?.tg_message_id;
-    const hasNewTailMessage = !hadNoPreviousMessages && nextTailId && previousTailId !== nextTailId;
-    
-    if (!hasChanges && lastMessages.length > 0) {
-        // No changes, skip rendering
-        console.log('📌 Messages unchanged');
-        return;
-    }
-
-    // Stick only when opening first time or when user was already near bottom and new tail message arrived.
-    shouldStickOnNextRender = hadNoPreviousMessages || (wasNearBottom && hasNewTailMessage);
-    
-    // Changes detected, re-render
-    console.log('🔄 Re-rendering messages (changes detected)');
-    lastMessages = JSON.parse(JSON.stringify(newMessages));
-    renderMessages(newMessages);
-}
-
-function checkForChanges(oldMessages, newMessages) {
-    // Check if number of messages changed
-    if (oldMessages.length !== newMessages.length) {
-        return true;
-    }
-    
-    // Check if any message content changed (including edits)
-    for (let i = 0; i < oldMessages.length; i++) {
-        const oldMsg = oldMessages[i];
-        const newMsg = newMessages[i];
-        
-        // Check for message deletions or additions
-        if (oldMsg.tg_message_id !== newMsg.tg_message_id) {
-            return true;
-        }
-        
-        // Check for content changes (edits)
-        if (oldMsg.message_text !== newMsg.message_text ||
-            oldMsg.pickup !== newMsg.pickup ||
-            oldMsg.dropoff !== newMsg.dropoff ||
-            oldMsg.edited_at !== newMsg.edited_at) {
-            console.log(`✏️ Message ${oldMsg.tg_message_id} was edited`);
-            return true;
-        }
-        
-        // Check for deletion flag changes
-        if (oldMsg.is_deleted !== newMsg.is_deleted) {
-            return true;
-        }
-    }
-    
-    return false;
-}
 
 function generatePrefillMessage(messageText) {
     // Remove "looking for driver" phrase
@@ -291,136 +250,162 @@ function buildCombinedBadges(msg) {
 	return `<div class="summary-badges">${badges.join('')}</div>`;
 }
 
-function renderMessages(messages) {
-	messagesContainer.innerHTML = '';
+function buildReplyCountMap(messages) {
+    const replyCountByOriginal = new Map();
 
-	messages.forEach((msg, index) => {
-		const isRide = msg.pickup || msg.dropoff;
-		const cardClass = isRide ? 'message-card ride' : 'message-card';
-		
-		const timeStr = new Date(msg.created_at).toLocaleTimeString('en-US', {
-			hour: '2-digit',
-			minute: '2-digit'
-		});
+    messages.forEach(msg => {
+        if (!msg.reply_to_msg_id || !msg.chat_id) return;
+        const originalKey = `${msg.chat_id}:${msg.reply_to_msg_id}`;
+        replyCountByOriginal.set(originalKey, (replyCountByOriginal.get(originalKey) || 0) + 1);
+    });
 
-		const senderInitials = (msg.sender_name || `User ${msg.sender_id}`)
-			.split(' ')
-			.map(n => n[0])
-			.join('')
-			.substring(0, 2)
-			.toUpperCase();
+    return replyCountByOriginal;
+}
 
-		// avatar markup: image if available, else fallback initials
-		const avatarAttr = msg.avatar_url ? escapeHtml(msg.avatar_url) : '';
-		const avatarHTML = msg.avatar_url
-			? `<div class="sender-avatar avatar-clickable" data-avatar="${avatarAttr}" data-name="${escapeHtml(getDisplayName(msg))}"><img src="${escapeHtml(msg.avatar_url)}" alt="avatar" onerror="this.style.display='none'; this.parentElement.classList.add('no-img')"><span class="avatar-fallback" style="display:none">${senderInitials}</span></div>`
-			: `<div class="sender-avatar avatar-clickable" data-avatar="" data-name="${escapeHtml(getDisplayName(msg))}"><span class="avatar-fallback">${senderInitials}</span></div>`;
+// Build a single card DOM element (does NOT append to container)
+function buildCard(msg, replyCountByOriginal) {
+	const isRide = msg.pickup || msg.dropoff;
+	const cardClass = isRide ? 'message-card ride' : 'message-card';
 
-		// Generate prefill message
-		const prefillMsg = generatePrefillMessage(msg.message_text || '');
-		const encodedMsg = encodeURIComponent(prefillMsg);
-
-		// Reply preview placeholder (shows only if this message is a reply)
-		// use composite id "chat_id:reply_to_msg_id" so server can find the stored row
-		const replyComposite = (msg.reply_to_msg_id && msg.chat_id) ? `${msg.chat_id}:${msg.reply_to_msg_id}` : '';
-		const replyPlaceholder = replyComposite
-			? `<div class="reply-preview" data-reply-id="${replyComposite}">Loading reply…</div>`
-			: '';
-
-		// Determine contact URL and button layout
-		let contactUrl = msg.contact_url || '#';
-		let buttonHTML = '';
-		
-		if (contactUrl && contactUrl !== '#') {
-			if (contactUrl.includes('t.me/')) {
-				// User HAS username - single Chat button
-				const chatLink = `${contactUrl}?text=${encodedMsg}`;
-				buttonHTML = `<a href="${chatLink}" class="action-btn btn-primary" target="_blank" style="flex: 1;">💬 Contact</a>`;
-			} else if (contactUrl.includes('tg://user')) {
-				// User NO username - Copy + Contact buttons (copy-btn used by ClipboardJS)
-				buttonHTML = `
-					<button class="action-btn btn-secondary copy-btn" type="button" style="flex: 1;">📋 Copy Message</button>
-					<a href="${contactUrl}" class="action-btn btn-primary" target="_blank" style="flex: 1;">💬 Contact</a>
-				`;
-			} else {
-				buttonHTML = `<a href="${contactUrl}" class="action-btn btn-primary" target="_blank" style="flex: 1;">💬 Contact</a>`;
-			}
-		} else {
-			// No contact URL - disabled button
-			buttonHTML = `<button class="action-btn btn-primary" disabled style="flex: 1;">💬 No Contact</button>`;
-		}
-		
-		// Remove combinedBadgesHTML and location-badges from card body
-		const card = document.createElement('div');
-        card.className = cardClass;
-        card.style.animationDelay = `${index * 0.03}s`;
-        card.style.animation = `slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards`;
-        
-        card.innerHTML = `
-            <div class="card-header">
-                <div class="sender-info" style="display: flex; align-items: flex-start; gap: 12px; flex: 1;">
-                    ${avatarHTML}
-                    <div style="flex: 1; min-width: 0;">
-                        <div class="sender-name">${escapeHtml(getDisplayName(msg))}</div>
-                        <div class="sender-meta">${escapeHtml(msg.group_name)}</div>
-                    </div>
-                </div>
-            </div>
-            <div class="card-body">
-                ${replyPlaceholder}
-                <div class="message-text">${escapeHtml(msg.message_text || '').replace(/\n/g, '<br>')}</div>
-            </div>
-            <div class="card-meta-row">
-                <div class="card-time">${timeStr}</div>
-            </div>
-            <div class="card-footer">
-                ${buttonHTML}
-            </div>
-        `;
-        
-        // Attach telegram composite id for quick lookup & anchor behavior
-        // API now returns tg_message_id as composite "chat_id:message_id"
-        card.setAttribute('data-tg-id', msg.tg_message_id);
-        messagesContainer.appendChild(card);
-
-        // initialize copy button data attr if present
-		const copyBtn = card.querySelector('.copy-btn');
-		if (copyBtn) copyBtn.dataset.clipboardText = prefillMsg;
-
-		// If this message is a reply, fetch preview asynchronously using composite id
-		if (replyComposite) {
-			const previewEl = card.querySelector('.reply-preview');
-			if (previewEl) loadReplyPreview(replyComposite, previewEl);
-		}
+	const timeStr = new Date(msg.created_at).toLocaleTimeString('en-US', {
+		hour: '2-digit',
+		minute: '2-digit'
 	});
 
-	// Initialize ClipboardJS once (destroy previous instance to avoid duplicates)
-    if (window.ClipboardJS) {
-        if (clipboardInstance) {
-            clipboardInstance.destroy();
-        }
-        clipboardInstance = new ClipboardJS('.copy-btn');
+	const senderInitials = (msg.sender_name || `User ${msg.sender_id}`)
+		.split(' ')
+		.map(n => n[0])
+		.join('')
+		.substring(0, 2)
+		.toUpperCase();
 
-        clipboardInstance.on('success', (e) => {
-            showToast('✅ Message copied to clipboard', 'success');
-            try { e.clearSelection(); } catch (err) {}
-        });
+	const avatarAttr = msg.avatar_url ? escapeHtml(msg.avatar_url) : '';
+	const avatarHTML = msg.avatar_url
+		? `<div class="sender-avatar avatar-clickable" data-avatar="${avatarAttr}" data-name="${escapeHtml(getDisplayName(msg))}"><img src="${escapeHtml(msg.avatar_url)}" alt="avatar" onerror="this.style.display='none'; this.parentElement.classList.add('no-img')"><span class="avatar-fallback" style="display:none">${senderInitials}</span></div>`
+		: `<div class="sender-avatar avatar-clickable" data-avatar="" data-name="${escapeHtml(getDisplayName(msg))}"><span class="avatar-fallback">${senderInitials}</span></div>`;
 
-        clipboardInstance.on('error', (e) => {
-            console.error('ClipboardJS error', e);
-            showToast('❌ Failed to copy message', 'error');
-        });
-    } else {
-        console.warn('ClipboardJS not loaded');
-    }
+	const prefillMsg = generatePrefillMessage(msg.message_text || '');
+	const encodedMsg = encodeURIComponent(prefillMsg);
 
-    // update requests counter after DOM is rendered
-    updateRequestsBadge();
+	const replyComposite = (msg.reply_to_msg_id && msg.chat_id) ? `${msg.chat_id}:${msg.reply_to_msg_id}` : '';
+	let replyPlaceholder = '';
+	if (replyComposite) {
+		if (msg.reply_is_deleted) {
+			replyPlaceholder = `<div class="reply-preview"><div class="reply-preview-inner"><div class="reply-sender">↳ Original</div><div class="reply-snippet" style="color:var(--danger);">Original request deleted</div></div></div>`;
+		} else if (msg.reply_sender_name || msg.reply_message_text) {
+			const rSender = escapeHtml(sanitizeName(msg.reply_sender_name) || 'Original');
+			const rSnippet = escapeHtml((msg.reply_message_text || '').substring(0, 120));
+			const ellipsis = (msg.reply_message_text || '').length > 120 ? '…' : '';
+			replyPlaceholder = `<div class="reply-preview"><div class="reply-preview-inner"><div class="reply-sender">↳ ${rSender}</div><div class="reply-snippet">${rSnippet}${ellipsis}</div></div></div>`;
+		} else {
+			// inline data missing — async fallback
+			replyPlaceholder = `<div class="reply-preview" data-reply-id="${replyComposite}">Loading reply…</div>`;
+		}
+	}
 
-    if (shouldStickOnNextRender) {
-        stickFeedToBottom();
-    }
-    shouldStickOnNextRender = false;
+	const replyCount = replyCountByOriginal ? (replyCountByOriginal.get(msg.tg_message_id) || 0) : 0;
+	const replyCountHTML = replyCount > 0
+		? `<span class="reply-count-indicator">↩ ${replyCount}</span>`
+		: '';
+
+	const routePill = (msg.pickup && msg.dropoff)
+		? `<div class="route-pill"><span class="route-from">${escapeHtml(msg.pickup)}</span><span class="route-arrow">→</span><span class="route-to">${escapeHtml(msg.dropoff)}</span></div>`
+		: (msg.pickup ? `<div class="route-pill"><span class="route-from">${escapeHtml(msg.pickup)}</span></div>` : '');
+
+	let contactUrl = msg.contact_url || '#';
+	let buttonHTML = '';
+	if (contactUrl && contactUrl !== '#') {
+		if (contactUrl.includes('t.me/')) {
+			const chatLink = `${contactUrl}?text=${encodedMsg}`;
+			buttonHTML = `<a href="${chatLink}" class="action-btn btn-primary" target="_blank" style="flex: 1;">Contact</a>`;
+		} else if (contactUrl.includes('tg://user')) {
+			buttonHTML = `
+				<button class="action-btn btn-secondary copy-btn" type="button" style="flex: 1;">Copy</button>
+				<a href="${contactUrl}" class="action-btn btn-primary" target="_blank" style="flex: 1;">Contact</a>
+			`;
+		} else {
+			buttonHTML = `<a href="${contactUrl}" class="action-btn btn-primary" target="_blank" style="flex: 1;">Contact</a>`;
+		}
+	} else {
+		buttonHTML = `<button class="action-btn btn-primary" disabled style="flex: 1;">No contact</button>`;
+	}
+
+	const card = document.createElement('div');
+	card.className = cardClass;
+	card.setAttribute('data-tg-id', msg.tg_message_id);
+	card.innerHTML = `
+		<div class="card-header">
+			<div class="sender-info" style="display: flex; align-items: flex-start; gap: 12px; flex: 1;">
+				${avatarHTML}
+				<div style="flex: 1; min-width: 0;">
+					<div class="sender-name">${escapeHtml(getDisplayName(msg))}</div>
+					<div class="sender-meta">${escapeHtml(msg.group_name)}</div>
+				</div>
+			</div>
+		</div>
+		${routePill}
+		<div class="card-body">
+			${replyPlaceholder}
+			<div class="message-text">${escapeHtml(msg.message_text || '').replace(/\n/g, '<br>')}</div>
+		</div>
+		<div class="card-meta-row">
+			${replyCountHTML}
+			<div class="card-time">${timeStr}</div>
+		</div>
+		<div class="card-footer">
+			${buttonHTML}
+		</div>
+	`;
+
+	const copyBtn = card.querySelector('.copy-btn');
+	if (copyBtn) copyBtn.dataset.clipboardText = prefillMsg;
+
+	// Only fire async fetch if inline data was absent (fallback placeholder)
+	if (replyComposite) {
+		const previewEl = card.querySelector('.reply-preview[data-reply-id]');
+		if (previewEl) loadReplyPreview(replyComposite, previewEl);
+	}
+
+	return card;
+}
+
+function reinitClipboard() {
+	if (!window.ClipboardJS) return;
+	if (clipboardInstance) clipboardInstance.destroy();
+	clipboardInstance = new ClipboardJS('.copy-btn');
+	clipboardInstance.on('success', (e) => {
+		showToast('Copied to clipboard', 'success');
+		try { e.clearSelection(); } catch (_) {}
+	});
+	clipboardInstance.on('error', () => showToast('Failed to copy', 'error'));
+}
+
+function renderMessages(messages) {
+	messagesContainer.innerHTML = '';
+	const replyCountByOriginal = buildReplyCountMap(messages);
+	messages.forEach((msg, index) => {
+		const card = buildCard(msg, replyCountByOriginal);
+		card.style.animationDelay = `${index * 0.03}s`;
+		card.style.animation = `slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards`;
+		messagesContainer.appendChild(card);
+	});
+
+	// Initialize ClipboardJS
+	reinitClipboard();
+
+	updateRequestsBadge();
+	updateJumpButtonVisibility();
+
+	if (shouldStickOnNextRender) {
+		stickFeedToBottom();
+	} else if (preserveDistanceFromBottomOnNextRender !== null) {
+		requestAnimationFrame(() => {
+			const maxScrollTop = Math.max(0, messagesContainer.scrollHeight - messagesContainer.clientHeight);
+			messagesContainer.scrollTop = Math.max(0, maxScrollTop - preserveDistanceFromBottomOnNextRender);
+		});
+	}
+	shouldStickOnNextRender = false;
+	preserveDistanceFromBottomOnNextRender = null;
 }
 
 // New helper: fetch original message and render a small clickable preview
@@ -488,8 +473,7 @@ async function deleteMessage(tgMsgId) {
         const res = await fetch(`${API_BASE}/messages/${encodeURIComponent(tgMsgId)}`, { method: 'DELETE' });
         if (res.ok) {
             console.log(`✅ Message ${tgMsgId} deleted`);
-            showToast('✅ Request deleted', 'success');
-            setTimeout(() => loadMessages(), 300);
+            showToast('Request deleted', 'success');
         } else {
             showToast('Failed to delete request', 'error');
         }
@@ -512,9 +496,8 @@ async function clearAllMessages() {
 
         if (res.ok && data.status === 'ok') {
             const deleted = Number(data.deleted || 0);
-            showToast(deleted > 0 ? `✅ Deleted ${deleted} requests` : 'No requests to clear', 'success');
+            showToast(deleted > 0 ? `Cleared ${deleted} requests` : 'Nothing to clear', 'success');
             console.log(`🗑️ Cleared ${deleted} messages`);
-            setTimeout(() => loadMessages(), 300);
         } else {
             showToast('Failed to clear requests', 'error');
         }
@@ -526,40 +509,117 @@ async function clearAllMessages() {
     }
 }
 
-function toggleAutoRefresh() {
-    if (autoRefreshInterval) {
-        stopAutoRefresh();
-        showToast('🔴 Real-time updates disabled', 'success');
-    } else {
-        startAutoRefresh();
-        showToast('🟢 Real-time updates enabled', 'success');
-    }
+// ── SSE connection ──────────────────────────────────────────────────────────
+function connectSSE() {
+    if (_sseSource) { _sseSource.close(); }
+    console.log('📡 Connecting to SSE stream...');
+    _sseSource = new EventSource(`${API_BASE}/stream`);
+
+    _sseSource.addEventListener('connected', () => {
+        console.log('✅ SSE connected');
+    });
+
+    _sseSource.addEventListener('refresh', () => {
+        console.log('SSE refresh event — syncing messages');
+        syncMessages();
+    });
+
+    _sseSource.onerror = () => {
+        console.warn('⚠️ SSE error — reconnecting in 3s');
+        _sseSource.close();
+        _sseSource = null;
+        setTimeout(connectSSE, 3000);
+    };
 }
 
-function startAutoRefresh() {
-    if (autoRefreshInterval) return;
-    console.log('🔄 Real-time updates enabled');
-    
-    // Fast polling for messages
-    autoRefreshInterval = setInterval(() => {
-        loadMessages();
-    }, REFRESH_INTERVAL);
-    
-    if (fabBtn) {
-        fabBtn.classList.add('active');
-        fabBtn.title = 'Real-time updates ON';
-    }
-}
+// Incremental sync: fetch fresh list, diff, patch DOM in-place
+async function syncMessages() {
+    try {
+        const res = await fetch(`${API_BASE}/messages`);
+        const data = await res.json();
+        if (data.status !== 'ok') return;
 
-function stopAutoRefresh() {
-    if (autoRefreshInterval) {
-        clearInterval(autoRefreshInterval);
-        autoRefreshInterval = null;
-    }
-    console.log('⏸️ Real-time updates disabled');
-    if (fabBtn) {
-        fabBtn.classList.remove('active');
-        fabBtn.title = 'Real-time updates OFF';
+        let messages = applyFormFilter(data.messages || []);
+        messages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+        if (lastMessages.length === 0) {
+            // No cards yet — do a full render
+            renderMessages(messages);
+            lastMessages = JSON.parse(JSON.stringify(messages));
+            stickFeedToBottom();
+            updateRequestsBadge();
+            updateJumpButtonVisibility();
+            return;
+        }
+
+        const newById = new Map(messages.map(m => [m.tg_message_id, m]));
+        const oldById = new Map(lastMessages.map(m => [m.tg_message_id, m]));
+
+        let anyChange = false;
+        const wasNearBottom = isFeedNearBottom();
+
+        // Remove deleted cards
+        for (const old of lastMessages) {
+            if (!newById.has(old.tg_message_id)) {
+                const el = messagesContainer.querySelector(`[data-tg-id="${CSS.escape(old.tg_message_id)}"]`);
+                if (el) el.remove();
+                anyChange = true;
+            }
+        }
+
+        // Update edited / avatar-arrived cards
+        const replyCountByOriginal = buildReplyCountMap(messages);
+        for (const msg of messages) {
+            const old = oldById.get(msg.tg_message_id);
+            if (!old) continue;
+            const textChanged = old.message_text !== msg.message_text || old.pickup !== msg.pickup || old.dropoff !== msg.dropoff || old.edited_at !== msg.edited_at;
+            const avatarArrived = !old.avatar_url && msg.avatar_url;
+            if (textChanged || avatarArrived) {
+                const el = messagesContainer.querySelector(`[data-tg-id="${CSS.escape(msg.tg_message_id)}"]`);
+                if (el) {
+                    if (avatarArrived) {
+                        // rebuild card so avatar + everything stays in sync
+                        const fresh = buildCard(msg, replyCountByOriginal);
+                        el.replaceWith(fresh);
+                    } else {
+                        const bodyEl = el.querySelector('.message-text');
+                        if (bodyEl) bodyEl.innerHTML = escapeHtml(msg.message_text || '').replace(/\n/g, '<br>');
+                    }
+                    anyChange = true;
+                }
+            }
+        }
+
+        // Append new cards at bottom
+        let hasNewCard = false;
+        for (const msg of messages) {
+            if (!oldById.has(msg.tg_message_id)) {
+                const card = buildCard(msg, replyCountByOriginal);
+                messagesContainer.appendChild(card);
+                if (card.querySelector('.reply-preview')) {
+                    const replyComposite = `${msg.chat_id}:${msg.reply_to_msg_id}`;
+                    const previewEl = card.querySelector('.reply-preview');
+                    if (previewEl) loadReplyPreview(replyComposite, previewEl);
+                }
+                anyChange = true;
+                hasNewCard = true;
+            }
+        }
+
+        if (anyChange) {
+            lastMessages = JSON.parse(JSON.stringify(messages));
+            reinitClipboard();
+            updateRequestsBadge();
+            if (hasNewCard && wasNearBottom) stickFeedToBottom();
+            updateJumpButtonVisibility();
+        }
+
+        // Handle empty state
+        if (messages.length === 0 && lastMessages.length === 0) {
+            messagesContainer.innerHTML = `<div class="loading-state"><div style="font-size:48px;opacity:0.5">🚗</div><p>No requests yet. Waiting for rides...</p></div>`;
+        }
+    } catch (err) {
+        console.error('syncMessages failed:', err);
     }
 }
 
@@ -661,7 +721,7 @@ function clearPwaCache() {
 window.clearPwaCache = clearPwaCache;
 
 // Cleanup
-window.addEventListener('beforeunload', stopAutoRefresh);
+window.addEventListener('beforeunload', () => { if (_sseSource) _sseSource.close(); });
 
 // Disable browser scroll restore so we control first paint position.
 if ('scrollRestoration' in history) {
@@ -785,3 +845,5 @@ function updateRequestsBadge() {
     requestsBadge.textContent = String(count);
     requestsBadge.style.display = count > 0 ? 'inline-block' : 'none';
 }
+
+updateJumpButtonVisibility();

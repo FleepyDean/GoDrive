@@ -1,12 +1,25 @@
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
 import sqlite3
 import os
 from datetime import datetime
 import json
+import time
+import threading
 
 app = Flask(__name__, static_folder='pwa', static_url_path='')
 CORS(app)
+
+# SSE: shared change counter + condition variable so /api/stream wakes instantly
+_change_lock = threading.Condition()
+_change_seq = 0
+
+def notify_change():
+    """Call after any write to messages table to wake SSE clients."""
+    global _change_seq
+    with _change_lock:
+        _change_seq += 1
+        _change_lock.notify_all()
 
 DB_FILE = os.path.join(os.path.dirname(__file__), "godrive.db")
 
@@ -108,14 +121,20 @@ def index():
 
 @app.route('/api/messages', methods=['GET'])
 def get_messages():
-    """Get all active messages, newest first"""
+    """Get all active messages with inlined reply context (no extra round trips needed)."""
     try:
         conn = get_db()
         c = conn.cursor()
         c.execute('''
-            SELECT * FROM messages 
-            WHERE is_deleted = 0 
-            ORDER BY created_at DESC 
+            SELECT m.*,
+                   r.sender_name  AS reply_sender_name,
+                   r.message_text AS reply_message_text,
+                   r.is_deleted   AS reply_is_deleted
+            FROM messages m
+            LEFT JOIN messages r
+              ON r.tg_message_id = (m.chat_id || ':' || m.reply_to_msg_id)
+            WHERE m.is_deleted = 0
+            ORDER BY m.created_at DESC
             LIMIT 100
         ''')
         rows = c.fetchall()
@@ -124,7 +143,6 @@ def get_messages():
         messages = [dict(row) for row in rows]
         print(f"📦 Fetched {len(messages)} active messages")
         
-        # Prevent caching - always get fresh data
         response = jsonify({"status": "ok", "messages": messages})
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
         response.headers['Pragma'] = 'no-cache'
@@ -132,6 +150,31 @@ def get_messages():
     except Exception as e:
         print(f"❌ Error fetching messages: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/stream')
+def sse_stream():
+    """Server-Sent Events endpoint. Pushes a 'refresh' event whenever messages change."""
+    def generate():
+        last_seen = -1
+        # send an immediate heartbeat so the connection is confirmed
+        yield 'event: connected\ndata: ok\n\n'
+        while True:
+            with _change_lock:
+                # wait up to 25s for a change (keeps connection alive through proxy timeouts)
+                changed = _change_lock.wait_for(lambda: _change_seq != last_seen, timeout=25)
+            if changed:
+                last_seen = _change_seq
+                yield f'event: refresh\ndata: {_change_seq}\n\n'
+            else:
+                # heartbeat comment to prevent proxy from closing idle connection
+                yield ': heartbeat\n\n'
+    response = Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream'
+    )
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'
+    return response
 
 @app.route('/api/messages/<tg_msg_id>', methods=['GET'])
 def get_message(tg_msg_id):
@@ -163,6 +206,7 @@ def delete_message(tg_msg_id):
         c.execute('UPDATE messages SET is_deleted = 1 WHERE tg_message_id = ? OR tg_message_id LIKE ?', (tg_msg_id, f'%:{tg_msg_id}'))
         conn.commit()
         conn.close()
+        notify_change()
         print(f"🗑️ Message {tg_msg_id} deleted")
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -179,6 +223,7 @@ def delete_all_messages():
         deleted = c.rowcount or 0
         conn.commit()
         conn.close()
+        notify_change()
         print(f"🗑️ Cleared all active messages: {deleted}")
         return jsonify({"status": "ok", "deleted": deleted})
     except Exception as e:
@@ -200,11 +245,18 @@ def update_message(tg_msg_id):
         ''', (data.get('message_text'), data.get('pickup'), data.get('dropoff'), datetime.now().isoformat(), tg_msg_id, str(data.get('message_id'))))
         conn.commit()
         conn.close()
+        notify_change()
         print(f"✏️ Message {tg_msg_id} updated")
         return jsonify({"status": "ok"})
     except Exception as e:
         print(f"❌ Error updating message: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/notify', methods=['POST'])
+def internal_notify():
+    """Called by GoDrive.py after a DB write to wake SSE clients."""
+    notify_change()
+    return jsonify({"status": "ok"})
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
@@ -306,4 +358,4 @@ def delete_history_item(hid):
 if __name__ == '__main__':
     init_db()
     print("🚀 Flask server starting on http://0.0.0.0:5000")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

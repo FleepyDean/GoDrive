@@ -20,6 +20,7 @@ import pickle
 
 # ========== Globals ==========
 session: Optional[aiohttp.ClientSession] = None
+FLASK_BASE = "http://127.0.0.1:5000"
 
 # Use more aggressive reconnect and timeout settings for Telethon and aiohttp
 from telethon.sessions import StringSession
@@ -42,6 +43,14 @@ message_map: Dict[str, int] = {}  # keep message_map keyed by composite string "
 driver_location: Optional[Tuple[float, float]] = None
 user_states = defaultdict(lambda: {'state': None, 'data': {}})
 last_user_message_time = {}  # user_id: timestamp
+
+async def notify_flask():
+    """Fire-and-forget: wake SSE clients after a DB write."""
+    try:
+        async with session.post(f"{FLASK_BASE}/api/notify") as _:
+            pass
+    except Exception:
+        pass
 
 # ========== Utils ==========
 def extract_locations(text):
@@ -98,53 +107,6 @@ async def safe_http_request(method, url, **kwargs):
             await asyncio.sleep(delay)
             delay = min(delay * 2, max_delay)
     raise Exception(f"HTTP {method.upper()} {url} failed after retries.")
-
-async def get_coordinates(place: str) -> Optional[Tuple[float, float]]:
-    if not place:
-        return None
-    place = place.lower().strip().split(',')[0]
-    if place in location_cache:
-        return location_cache[place]
-    place = CUSTOM_LOCATIONS.get("aliases", {}).get(place, place)
-    if place in CUSTOM_LOCATIONS:
-        location_cache[place] = CUSTOM_LOCATIONS[place]
-        return CUSTOM_LOCATIONS[place]
-    for suffix in ["", " UTM Johor", " Johor Bahru"]:
-        params = {"address": place + suffix, "key": GOOGLE_MAPS_API_KEY}
-        try:
-            data = await safe_http_request("get", "https://maps.googleapis.com/maps/api/geocode/json", params=params, timeout=3)
-            if data.get("status") == "OK":
-                loc = data["results"][0]["geometry"]["location"]
-                coord = (loc["lat"], loc["lng"])
-                if haversine(UTM_COORDS, coord) <= MAX_RADIUS_KM:
-                    location_cache[place] = coord
-                    return coord
-        except Exception as e:
-            continue
-    return None
-
-async def get_travel_data(origin, destination):
-    key = (origin, destination)
-    if key in distance_cache:
-        return distance_cache[key]
-    params = {
-        "units": "metric",
-        "origins": f"{origin[0]},{origin[1]}",
-        "destinations": f"{destination[0]},{destination[1]}",
-        "mode": "driving",
-        "key": DISTANCE_API_KEY
-    }
-    try:
-        data = await safe_http_request("get", "https://maps.googleapis.com/maps/api/distancematrix/json", params=params, timeout=3)
-        if data["status"] == "OK":
-            e = data["rows"][0]["elements"][0]
-            if e["status"] == "OK":
-                distance, duration = e["distance"]["value"] / 1000, e["duration"]["value"] // 60
-                distance_cache[key] = (distance, duration)
-                return distance, duration
-    except Exception:
-        pass
-    return None, None
 
 async def send_bot_message(text, reply_to=None, buttons=None):
     """
@@ -319,6 +281,24 @@ async def ensure_avatar(sender_id):
         print(f"❌ ensure_avatar error: {e}")
     return None
 
+async def _fetch_avatar_then_update(sender_id, chat_id, message_id):
+    """Background: fetch avatar, patch the DB row, notify SSE so PWA refreshes."""
+    try:
+        avatar = await ensure_avatar(sender_id)
+        if not avatar:
+            return
+        conn = get_db_conn()
+        c = conn.cursor()
+        key = f"{chat_id}:{message_id}"
+        c.execute('UPDATE messages SET avatar_url = ? WHERE tg_message_id = ?', (avatar, key))
+        # Also backfill any other rows from same sender that lack an avatar
+        c.execute('UPDATE messages SET avatar_url = ? WHERE sender_id = ? AND (avatar_url IS NULL OR avatar_url = "")', (avatar, sender_id))
+        conn.commit()
+        conn.close()
+        asyncio.create_task(notify_flask())
+    except Exception as e:
+        print(f"⚠️ background avatar update failed: {e}")
+
 def save_message_to_db(data: dict):
     """Save message to SQLite database (uses composite tg_message_id = 'chat_id:message_id')."""
     try:
@@ -394,16 +374,21 @@ async def process_new_message(event):
         if not full_name:
             full_name = f"User {data['sender_id']}"
         
-        # ✅ Attempt to fetch and save avatar (non-blocking-ish)
-        try:
-            avatar = await ensure_avatar(data["sender_id"])
-            if avatar:
-                data["avatar_url"] = avatar
-        except Exception:
+        # ✅ Save to database immediately (no blocking on avatar download)
+        # If avatar already cached on disk we use it; otherwise fetch in background.
+        avatars_dir = os.path.join(os.path.dirname(__file__), "pwa", "avatars")
+        cached_path = os.path.join(avatars_dir, f"{data['sender_id']}.jpg")
+        if os.path.exists(cached_path) and os.path.getsize(cached_path) > 0:
+            data["avatar_url"] = f"/avatars/{data['sender_id']}.jpg"
+        else:
             data["avatar_url"] = None
 
-        # ✅ Save to database for PWA to display (stores composite key)
         save_message_to_db(data)
+        asyncio.create_task(notify_flask())
+
+        # Background avatar fetch + DB patch (only if not cached)
+        if data["avatar_url"] is None:
+            asyncio.create_task(_fetch_avatar_then_update(data["sender_id"], data["chat_id"], data["message_id"]))
         
         # prepare reply mapping keys as composite strings
         reply_key = f"{data.get('chat_id')}:{data.get('reply_to_msg_id')}" if data.get('reply_to_msg_id') else None
@@ -467,6 +452,7 @@ async def process_edit_message(event):
             ''', (data["message_text"], data["pickup"], data["dropoff"], data.get("edit_date") or datetime.now().isoformat(), key, f'%:{data["message_id"]}'))
             conn.commit()
             conn.close()
+            asyncio.create_task(notify_flask())
             print(f"✅ Message {key} updated in database")
         except Exception as e:
             print(f"❌ Error updating DB: {str(e)}")
@@ -554,6 +540,7 @@ async def handle_deleted_messages(event):
         if _mark_deleted_in_db(chat_id, msg_id):
             print(f"🗑️ Message {msg_id} marked as deleted in DB")
         _delete_bot_message(msg_id, chat_id)
+    asyncio.create_task(notify_flask())
 
     # Re-check the affected chats immediately in case Telegram delivered a partial delete event.
     asyncio.create_task(reconcile_recent_messages(limit_per_chat=150))
