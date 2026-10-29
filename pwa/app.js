@@ -308,9 +308,7 @@ function buildCard(msg, replyCountByOriginal) {
 		? `<span class="reply-count-indicator">↩ ${replyCount}</span>`
 		: '';
 
-	const routePill = (msg.pickup && msg.dropoff)
-		? `<div class="route-pill"><span class="route-from">${escapeHtml(msg.pickup)}</span><span class="route-arrow">→</span><span class="route-to">${escapeHtml(msg.dropoff)}</span></div>`
-		: (msg.pickup ? `<div class="route-pill"><span class="route-from">${escapeHtml(msg.pickup)}</span></div>` : '');
+	const routePill = ''; // Removed location pill display
 
 	let contactUrl = msg.contact_url || '#';
 	let buttonHTML = '';

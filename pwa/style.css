@@ -724,6 +724,9 @@ button { font-family: inherit; }
     .message-card { padding: 12px; margin-bottom: 8px; border-radius: var(--r-md); }
     .floating-clear-btn { right: 12px; bottom: calc(78px + env(safe-area-inset-bottom)); }
     .floating-jump-btn  { right: 12px; bottom: calc(130px + env(safe-area-inset-bottom)); }
+
+    /* Center profile modal on mobile */
+    #profileModal { align-items: center; }
 }
 
 @media (max-height: 520px) {

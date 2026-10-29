@@ -18,7 +18,9 @@ EARTH_RADIUS_KM = 6371
 GROUP_ID: Dict[int, str] = {
     -4289055354: "⚡️GoDrive🚖",
     -1001806905741: "🚨UTM TRANSPORTER🛻",
-    -1002541339165: "PREBET UTM JB 🚖🅿️"
+    -1002541339165: "PREBET UTM JB 🚖🅿️",
+    -1004396027930: "E-hailing UTM🚖",
+    -1003495666572: "UTM Student Drive"
 }
 
 CUSTOM_LOCATIONS: Dict[str, Tuple[float, float] | Dict[str, str]] = {

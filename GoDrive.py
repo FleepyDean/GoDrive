@@ -390,8 +390,12 @@ async def process_new_message(event):
         if data["avatar_url"] is None:
             asyncio.create_task(_fetch_avatar_then_update(data["sender_id"], data["chat_id"], data["message_id"]))
         
-        # prepare reply mapping keys as composite strings
-        reply_key = f"{data.get('chat_id')}:{data.get('reply_to_msg_id')}" if data.get('reply_to_msg_id') else None
+        # prepare reply mapping keys as composite strings (with consistent int->str conversion)
+        reply_key = None
+        if data.get('reply_to_msg_id'):
+            reply_chat_id = int(data.get('chat_id')) if data.get('chat_id') else 0
+            reply_msg_id = int(data.get('reply_to_msg_id'))
+            reply_key = f"{reply_chat_id}:{reply_msg_id}"
 
         # ✅ Keep legacy bot message sending (optional, can remove later)
         if not data["pickup"] and not data["dropoff"]:
@@ -420,9 +424,12 @@ async def process_new_message(event):
             res = await send_bot_message(text, reply_to_id, buttons) if 'buttons' in locals() else await send_bot_message(text, reply_to_id)
 
         if "result" in res:
-            key = f"{data.get('chat_id')}:{data.get('message_id')}"
+            # Store key with consistent int->str conversion
+            chat_id = int(data.get('chat_id')) if data.get('chat_id') else 0
+            msg_id = int(data.get('message_id')) if data.get('message_id') else 0
+            key = f"{chat_id}:{msg_id}"
             message_map[key] = res["result"]["message_id"]
-            print("✅ Message processed successfully")
+            print(f"✅ Message processed successfully, stored with key '{key}'")
         else:
             print(f"⚠️ Legacy bot message failed: {res}")
     except Exception as e:
@@ -509,37 +516,76 @@ def _mark_deleted_in_db(chat_id, msg_id):
         print(f"❌ Error marking message as deleted: {e}")
         return False
 
-def _delete_bot_message(msg_id, chat_id=None):
+async def _delete_bot_message(msg_id, chat_id=None):
     bot_msg_id = None
+    found_key = None
     try:
+        # Convert msg_id to int then str for consistent matching
+        msg_id_str = str(int(msg_id))
         if chat_id is not None:
-            bot_msg_id = message_map.get(f"{chat_id}:{msg_id}")
+            chat_id_str = str(int(chat_id))
+            exact_key = f"{chat_id_str}:{msg_id_str}"
+            bot_msg_id = message_map.pop(exact_key, None)
+            found_key = exact_key if bot_msg_id else None
+            if bot_msg_id:
+                print(f"✅ Found exact key '{exact_key}' -> bot_msg_id {bot_msg_id}")
         if not bot_msg_id:
-            for k, v in message_map.items():
-                if k == str(msg_id) or k.endswith(f":{msg_id}"):
+            # Fallback: search for any key ending with :msg_id
+            target_suffix = f":{msg_id_str}"
+            for k, v in list(message_map.items()):
+                if k.endswith(target_suffix):
                     bot_msg_id = v
+                    found_key = k
+                    del message_map[k]
+                    print(f"✅ Found fallback key '{k}' -> bot_msg_id {bot_msg_id}")
                     break
+        if not bot_msg_id:
+            print(f"⚠️ No bot message found for msg_id {msg_id} (chat_id={chat_id}, msg_id_str={msg_id_str})")
+            print(f"🔍 Available keys sample: {list(message_map.keys())[:5]}")
     except Exception as e:
         print(f"⚠️ Error searching message_map for deleted msg {msg_id}: {e}")
+        return
 
     if bot_msg_id:
         try:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteMessage"
             payload = {"chat_id": BOT_CHAT_ID, "message_id": bot_msg_id}
-            asyncio.create_task(safe_http_request("post", url, json=payload))
-            print(f"🗑️ Requested bot to delete message id {bot_msg_id}")
+            print(f"🗑️ Sending delete request for bot_msg_id {bot_msg_id} in chat {BOT_CHAT_ID}")
+            result = await safe_http_request("post", url, json=payload)
+            if result.get("ok"):
+                print(f"✅ Successfully deleted bot message {bot_msg_id}")
+            else:
+                print(f"❌ Failed to delete bot message {bot_msg_id}: {result.get('description', result)}")
         except Exception as e:
-            print(f"❌ Failed to request bot delete for message {bot_msg_id}: {e}")
+            print(f"❌ Exception during bot delete for message {bot_msg_id}: {e}")
 
-@client.on(events.MessageDeleted(chats=list(GROUP_ID.keys())))
+@client.on(events.MessageDeleted())
 async def handle_deleted_messages(event):
     deleted_ids = getattr(event, 'deleted_ids', None) or getattr(event, 'messages', None) or []
     chat_id = getattr(event, 'chat_id', None)
 
+    # NOTE: No chats= filter. Telethon delete events for basic (non-channel)
+    # groups do NOT carry chat info, so a chats= filter would silently drop them.
+    # We match deleted message ids against our message_map / DB instead.
+
+    # Debug logging to help diagnose issues
+    print(f"🔍 Delete event: chat_id={chat_id} (type={type(chat_id).__name__}), deleted_ids={deleted_ids}")
+    print(f"🔍 Current message_map keys (first 10): {list(message_map.keys())[:10]}")
+
+    if not deleted_ids:
+        return
+
+    # If chat_id is known and it's NOT one of our tracked groups, ignore.
+    # (When chat_id is None — typical for basic-group deletes — we proceed and
+    #  match by message id against message_map/DB.)
+    if chat_id is not None and chat_id not in GROUP_ID:
+        print(f"⏭️ Ignoring delete from untracked chat {chat_id}")
+        return
+
     for msg_id in deleted_ids:
         if _mark_deleted_in_db(chat_id, msg_id):
             print(f"🗑️ Message {msg_id} marked as deleted in DB")
-        _delete_bot_message(msg_id, chat_id)
+        await _delete_bot_message(msg_id, chat_id)
     asyncio.create_task(notify_flask())
 
     # Re-check the affected chats immediately in case Telegram delivered a partial delete event.
@@ -705,5 +751,9 @@ async def run():
                 pass
             session = None
 
-print("🚀 GoDrive is Running... Have Fun!")
-client.loop.run_until_complete(run())
+def main():
+    print("🚀 GoDrive is Running... Have Fun!")
+    client.loop.run_until_complete(run())
+
+if __name__ == "__main__":
+    main()
